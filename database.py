@@ -31,6 +31,12 @@ def init_db():
             valor_limite REAL NOT NULL
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS configuracoes (
+            chave TEXT PRIMARY KEY,
+            valor TEXT NOT NULL
+        )
+    """)
     conn.commit()
     conn.close()
 
@@ -150,5 +156,24 @@ def salvar_meta(categoria: str, valor_limite: float):
 def deletar_meta(categoria: str):
     conn = sqlite3.connect(DB_PATH)
     conn.execute("DELETE FROM metas WHERE categoria = ?", (categoria,))
+    conn.commit()
+    conn.close()
+
+
+def get_config(chave: str, default: str | None = None) -> str | None:
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT valor FROM configuracoes WHERE chave = ?", (chave,))
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else default
+
+
+def set_config(chave: str, valor: str):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)",
+        (chave, valor),
+    )
     conn.commit()
     conn.close()

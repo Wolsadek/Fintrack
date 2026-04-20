@@ -131,6 +131,11 @@ CATEGORIAS_META = [
     if c not in {"Receita", "Estorno", "Investimentos", "Fatura Cartão"}
 ]
 
+# Agrupamentos para regra 50/30/20
+CATS_NECESSIDADES = {"Alimentação", "Transporte", "Saúde", "Educação", "Esporte"}
+CATS_DESEJOS      = {"Lazer", "Assinaturas", "Outros"}
+CATS_INVESTIMENTOS = {"Investimentos"}
+
 
 def calcular_alertas(gastos_atual_df: pd.DataFrame, mes_atual: str) -> dict:
     """Retorna categorias com gasto acima de 20% da média dos meses anteriores."""
@@ -232,8 +237,8 @@ fatura_paga        = df[df["categoria"] == "Fatura Cartão"]["valor"].abs().sum(
 
 # ─────────────────── TABS ───────────────────
 
-tab_resumo, tab_transacoes, tab_historico = st.tabs(
-    ["📊 Resumo", "📋 Transações", "📈 Histórico"]
+tab_resumo, tab_transacoes, tab_plan, tab_ia, tab_historico = st.tabs(
+    ["📊 Resumo", "📋 Transações", "💡 Planejamento", "🤖 IA", "📈 Histórico"]
 )
 
 # ═══════════════════════════════════════════
@@ -316,7 +321,7 @@ with tab_resumo:
                 st.progress(pct_bar)
         else:
             st.caption("Nenhuma meta definida ainda.")
-            st.caption("Configure suas metas no final desta página.")
+            st.caption("Configure em 💡 Planejamento →")
 
     st.markdown("---")
 
@@ -437,40 +442,6 @@ with tab_resumo:
             st.metric("Resgatado", fmt_brl(invest_resgatado))
             st.metric("Líquido investido", fmt_brl(invest_liquido))
 
-    # ── Gerenciar Metas ──
-    st.markdown("---")
-    with st.expander("⚙️ Gerenciar Metas por Categoria"):
-        st.caption("Define o limite máximo de gasto mensal por categoria.")
-        col_mc, col_mv, col_mb = st.columns([2, 2, 1])
-        with col_mc:
-            meta_cat = st.selectbox("Categoria", CATEGORIAS_META, key="meta_cat")
-        with col_mv:
-            metas_atuais = db.get_metas()
-            valor_existente = metas_atuais.get(meta_cat, 0.0)
-            meta_val = st.number_input(
-                "Limite mensal (R$)",
-                min_value=0.0,
-                value=valor_existente,
-                step=50.0,
-                key="meta_val",
-            )
-        with col_mb:
-            st.markdown("<br>", unsafe_allow_html=True)
-            if st.button("💾 Salvar", type="primary") and meta_val > 0:
-                db.salvar_meta(meta_cat, meta_val)
-                st.success(f"Meta salva!")
-                st.rerun()
-
-        if metas_atuais:
-            st.markdown("**Metas ativas:**")
-            for cat, limite in sorted(metas_atuais.items()):
-                c1, c2, c3 = st.columns([3, 2, 1])
-                c1.write(f"**{cat}**")
-                c2.write(fmt_brl(limite) + " / mês")
-                if c3.button("🗑️", key=f"del_meta_{cat}"):
-                    db.deletar_meta(cat)
-                    st.rerun()
-
 # ═══════════════════════════════════════════
 #  TAB 2 — TRANSAÇÕES
 # ═══════════════════════════════════════════
@@ -572,7 +543,334 @@ with tab_transacoes:
                     st.rerun()
 
 # ═══════════════════════════════════════════
-#  TAB 3 — HISTÓRICO
+#  TAB 3 — PLANEJAMENTO
+# ═══════════════════════════════════════════
+
+with tab_plan:
+    st.markdown("### 💡 Planejamento Financeiro")
+
+    # ── Configuração de salário ──
+    salario_salvo  = db.get_config("salario_mensal")
+    dias_u_salvo   = db.get_config("dias_uteis", "22")
+    salario_atual  = float(salario_salvo) if salario_salvo else 0.0
+    dias_uteis     = int(dias_u_salvo)
+
+    tblm_mes = df[df["descricao"].str.contains("TBLM", case=False, na=False)]["valor"].sum()
+    hint = f"TBLM neste mês: {fmt_brl(tblm_mes)}" if tblm_mes > 0 else "Informe sua renda mensal total"
+
+    col_sal, col_dias, col_btn = st.columns([3, 1, 1])
+    with col_sal:
+        novo_salario = st.number_input(
+            "Salário / renda mensal (R$)",
+            min_value=0.0, value=salario_atual, step=100.0,
+            help=hint,
+        )
+    with col_dias:
+        novos_dias = st.number_input(
+            "Dias úteis/mês", min_value=1, max_value=31,
+            value=dias_uteis, help="Padrão: 22 dias",
+        )
+    with col_btn:
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("💾 Salvar", type="primary", key="salvar_salario"):
+            db.set_config("salario_mensal", str(novo_salario))
+            db.set_config("dias_uteis", str(novos_dias))
+            salario_atual = novo_salario
+            dias_uteis    = novos_dias
+            st.success("Salvo!")
+            st.rerun()
+
+    if salario_atual <= 0:
+        st.info("Configure seu salário acima para ver as análises de planejamento.")
+    else:
+        valor_dia  = salario_atual / dias_uteis
+        valor_hora = valor_dia / 8
+
+        st.markdown("---")
+
+        # ── Métricas como % da renda ──
+        pct_gastos    = (total_gastos_reais / salario_atual) * 100
+        pct_econ      = (max(saldo_mes, 0) / salario_atual) * 100
+        pct_inv       = (invest_liquido / salario_atual) * 100 if invest_liquido > 0 else 0.0
+        dias_p_gastos = total_gastos_reais / valor_dia
+
+        col_a, col_b, col_c, col_d = st.columns(4)
+        col_a.metric("🛒 Gastos / renda",   f"{pct_gastos:.1f}%")
+        col_b.metric("💰 Economizado",       f"{pct_econ:.1f}%")
+        col_c.metric("📈 Investido",          f"{pct_inv:.1f}%")
+        col_d.metric("⏰ Dias p/ pagar gastos", f"{dias_p_gastos:.1f} dias")
+
+        st.markdown("---")
+
+        # ── Regra 50/30/20 ──
+        st.markdown("#### Regra 50 / 30 / 20")
+        st.caption("Necessidades 50% · Desejos 30% · Investimentos 20% — valores ideais para saúde financeira")
+
+        g_nec  = gastos_df[gastos_df["categoria"].isin(CATS_NECESSIDADES)]["valor"].abs().sum()
+        g_des  = gastos_df[gastos_df["categoria"].isin(CATS_DESEJOS)]["valor"].abs().sum()
+        g_inv  = invest_liquido
+
+        pct_nec = (g_nec / salario_atual) * 100
+        pct_des = (g_des / salario_atual) * 100
+        pct_inv_r = (g_inv / salario_atual) * 100
+
+        blocos = [
+            ("🏠 Necessidades", pct_nec, 50, g_nec, "#45B7D1"),
+            ("🎉 Desejos",      pct_des, 30, g_des, "#C3A6FF"),
+            ("📈 Investimentos", pct_inv_r, 20, g_inv, "#66BB6A"),
+        ]
+        for label, pct_real, pct_ideal, valor, cor in blocos:
+            diff = pct_real - pct_ideal
+            sinal = f"+{diff:.1f}pp" if diff > 0 else f"{diff:.1f}pp"
+            status = "🔴" if diff > 5 else ("🟡" if diff > 0 else "🟢")
+            col_l, col_v, col_s = st.columns([3, 2, 1])
+            col_l.markdown(f"**{label}** — ideal {pct_ideal}%")
+            col_v.markdown(f"{fmt_brl(valor)} ({pct_real:.1f}%)")
+            col_s.markdown(f"{status} {sinal}")
+            st.progress(min(pct_real / 100, 1.0))
+
+        fig_5030 = go.Figure()
+        labels  = ["Necessidades", "Desejos", "Investimentos"]
+        ideais  = [50, 30, 20]
+        reais   = [pct_nec, pct_des, pct_inv_r]
+        cores   = ["#45B7D1", "#C3A6FF", "#66BB6A"]
+        fig_5030.add_trace(go.Bar(
+            name="Ideal", x=labels, y=ideais,
+            marker_color="rgba(255,255,255,0.12)",
+            marker_line_color="rgba(255,255,255,0.3)", marker_line_width=1,
+        ))
+        fig_5030.add_trace(go.Bar(
+            name="Atual", x=labels, y=reais,
+            marker_color=[c if r <= i else "#FF6B6B" for c, r, i in zip(cores, reais, ideais)],
+        ))
+        fig_5030.update_layout(
+            barmode="overlay", paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)", font_color="white",
+            yaxis=dict(title="%", gridcolor="rgba(255,255,255,0.08)"),
+            legend=dict(orientation="h", y=1.1),
+            margin=dict(l=0, r=0, t=20, b=0), height=280,
+        )
+        st.plotly_chart(fig_5030, use_container_width=True)
+
+        st.markdown("---")
+
+        # ── Custo em dias de trabalho por categoria ──
+        st.markdown("#### ⏰ Custo em Dias de Trabalho")
+        if not gastos_df.empty:
+            custo_cat = (
+                gastos_df.groupby("categoria")["valor"].sum().abs()
+                .reset_index()
+                .sort_values("valor", ascending=False)
+            )
+            custo_cat["% Salário"]       = (custo_cat["valor"] / salario_atual * 100).round(1)
+            custo_cat["Dias trabalhados"] = (custo_cat["valor"] / valor_dia).round(1)
+            custo_cat["Horas trabalhadas"]= (custo_cat["valor"] / valor_hora).round(0).astype(int)
+            custo_cat["Gasto"]           = custo_cat["valor"].apply(fmt_brl)
+            st.dataframe(
+                custo_cat[["categoria", "Gasto", "% Salário", "Dias trabalhados", "Horas trabalhadas"]]
+                .rename(columns={"categoria": "Categoria"}),
+                hide_index=True, use_container_width=True,
+            )
+
+        st.markdown("---")
+
+        # ── Projeção anual ──
+        st.markdown("#### 📅 Projeção")
+        economia_mensal = max(saldo_mes, 0)
+        col_p1, col_p2, col_p3 = st.columns(3)
+        col_p1.metric("Economia projetada em 1 ano",  fmt_brl(economia_mensal * 12))
+        col_p2.metric("Economia projetada em 2 anos", fmt_brl(economia_mensal * 24))
+        col_p3.metric("Economia projetada em 5 anos", fmt_brl(economia_mensal * 60))
+
+        if economia_mensal > 0:
+            meses_range = list(range(1, 61))
+            proj_vals   = [economia_mensal * m for m in meses_range]
+            fig_proj = go.Figure(go.Scatter(
+                x=meses_range, y=proj_vals,
+                mode="lines", fill="tozeroy",
+                line=dict(color="#66BB6A", width=2),
+                fillcolor="rgba(102,187,106,0.1)",
+                hovertemplate="Mês %{x}: R$ %{y:,.2f}<extra></extra>",
+            ))
+            fig_proj.update_layout(
+                title="Acúmulo projetado (5 anos, sem juros)",
+                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                font_color="white",
+                xaxis=dict(title="Meses", gridcolor="rgba(255,255,255,0.08)"),
+                yaxis=dict(title="R$",    gridcolor="rgba(255,255,255,0.08)"),
+                margin=dict(l=0, r=0, t=40, b=0), showlegend=False,
+            )
+            st.plotly_chart(fig_proj, use_container_width=True)
+
+        st.markdown("---")
+
+        # ── Gerenciar Metas ──
+        st.markdown("#### 🎯 Metas por Categoria")
+        col_mc, col_mv, col_mb = st.columns([2, 2, 1])
+        with col_mc:
+            meta_cat = st.selectbox("Categoria", CATEGORIAS_META, key="meta_cat")
+        with col_mv:
+            metas_atuais = db.get_metas()
+            meta_val = st.number_input(
+                "Limite mensal (R$)", min_value=0.0,
+                value=metas_atuais.get(meta_cat, 0.0),
+                step=50.0, key="meta_val",
+            )
+        with col_mb:
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("💾 Salvar meta", type="primary") and meta_val > 0:
+                db.salvar_meta(meta_cat, meta_val)
+                st.success("Meta salva!")
+                st.rerun()
+
+        if metas_atuais:
+            for cat, limite in sorted(metas_atuais.items()):
+                c1, c2, c3 = st.columns([3, 2, 1])
+                c1.write(f"**{cat}**")
+                c2.write(fmt_brl(limite) + " / mês")
+                if c3.button("🗑️", key=f"del_meta_{cat}"):
+                    db.deletar_meta(cat)
+                    st.rerun()
+
+# ═══════════════════════════════════════════
+#  TAB 4 — IA
+# ═══════════════════════════════════════════
+
+with tab_ia:
+    st.markdown("### 🤖 Assistente Financeiro IA")
+
+    # ── Configuração ──
+    with st.expander("⚙️ Configurar API"):
+        st.markdown(
+            "O assistente usa o **Groq** (gratuito, rápido) ou **Google Gemini** (gratuito). "
+            "Crie uma conta em [groq.com](https://console.groq.com) e gere uma API Key."
+        )
+        provedores = ["Groq (grátis — recomendado)", "Google Gemini (grátis)", "OpenAI"]
+        prov_salvo = db.get_config("ia_provedor", provedores[0])
+        prov_idx   = provedores.index(prov_salvo) if prov_salvo in provedores else 0
+
+        col_prov, col_key = st.columns([1, 2])
+        with col_prov:
+            provedor = st.selectbox("Provedor", provedores, index=prov_idx)
+        with col_key:
+            api_key_salva = db.get_config("ia_api_key", "")
+            api_key = st.text_input(
+                "API Key", value=api_key_salva, type="password",
+                placeholder="gsk_..."
+            )
+        if st.button("💾 Salvar configuração de IA"):
+            db.set_config("ia_provedor", provedor)
+            db.set_config("ia_api_key",  api_key)
+            st.success("Configuração salva!")
+            st.rerun()
+
+    api_key_ativa = db.get_config("ia_api_key", "")
+
+    # ── Contexto financeiro para a IA ──
+    def montar_contexto() -> str:
+        linhas = [
+            f"Mês analisado: {fmt_mes(mes_sel)}",
+            f"Entradas: {fmt_brl(total_entradas)}",
+            f"Saídas totais: {fmt_brl(total_saidas)}",
+            f"Gastos do dia-a-dia: {fmt_brl(total_gastos_reais)}",
+            f"Investido (líquido): {fmt_brl(invest_liquido)}",
+            f"Saldo do mês: {fmt_brl(saldo_mes)}",
+            "",
+            "Gastos por categoria:",
+        ]
+        if not gastos_df.empty:
+            for cat, val in gastos_df.groupby("categoria")["valor"].sum().abs().sort_values(ascending=False).items():
+                linhas.append(f"  - {cat}: {fmt_brl(val)}")
+
+        sal = db.get_config("salario_mensal")
+        if sal:
+            linhas += ["", f"Salário mensal configurado: {fmt_brl(float(sal))}"]
+
+        metas = db.get_metas()
+        if metas:
+            linhas.append("\nMetas configuradas:")
+            for cat, lim in metas.items():
+                gasto = gastos_df[gastos_df["categoria"] == cat]["valor"].abs().sum()
+                linhas.append(f"  - {cat}: gasto {fmt_brl(gasto)} / limite {fmt_brl(lim)}")
+
+        return "\n".join(linhas)
+
+    # ── Perguntas rápidas ──
+    st.markdown("**Perguntas rápidas:**")
+    perguntas_rapidas = [
+        "Onde estou gastando mais este mês?",
+        "Estou dentro da regra 50/30/20?",
+        "Qual categoria devo cortar para economizar mais?",
+        "Como posso reduzir meus gastos em R$200?",
+        "Estou indo bem financeiramente?",
+        "Que metas de gasto você me recomenda?",
+    ]
+    cols_p = st.columns(3)
+    pergunta_selecionada = None
+    for i, p in enumerate(perguntas_rapidas):
+        if cols_p[i % 3].button(p, key=f"pq_{i}", use_container_width=True):
+            pergunta_selecionada = p
+
+    st.markdown("---")
+
+    # ── Chat ──
+    if "ia_messages" not in st.session_state:
+        st.session_state.ia_messages = []
+
+    for msg in st.session_state.ia_messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    prompt_input = st.chat_input("Pergunte sobre seus gastos...")
+    prompt = pergunta_selecionada or prompt_input
+
+    if prompt:
+        st.session_state.ia_messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        with st.chat_message("assistant"):
+            if not api_key_ativa:
+                resposta = (
+                    "Configure sua API Key no painel **⚙️ Configurar API** acima para "
+                    "ativar o assistente. O Groq é gratuito e leva menos de 2 minutos pra configurar."
+                )
+                st.markdown(resposta)
+            else:
+                contexto = montar_contexto()
+                system_prompt = (
+                    "Você é um assistente financeiro pessoal especializado em finanças pessoais brasileiras. "
+                    "Responda de forma direta, prática e em português. Use os dados abaixo para embasar sua resposta.\n\n"
+                    f"DADOS FINANCEIROS DO USUÁRIO:\n{contexto}"
+                )
+                try:
+                    from groq import Groq
+                    client  = Groq(api_key=api_key_ativa)
+                    with st.spinner("Analisando seus dados..."):
+                        completion = client.chat.completions.create(
+                            model="llama-3.3-70b-versatile",
+                            messages=[
+                                {"role": "system",  "content": system_prompt},
+                                {"role": "user",    "content": prompt},
+                            ],
+                            max_tokens=1024,
+                        )
+                    resposta = completion.choices[0].message.content
+                except ImportError:
+                    resposta = "⚠️ Instale a dependência: `pip install groq` e reinicie o app."
+                except Exception as e:
+                    resposta = f"⚠️ Erro ao conectar com a IA: {e}"
+                st.markdown(resposta)
+
+        st.session_state.ia_messages.append({"role": "assistant", "content": resposta})
+
+    if st.session_state.ia_messages:
+        if st.button("🗑️ Limpar conversa"):
+            st.session_state.ia_messages = []
+            st.rerun()
+
+# ═══════════════════════════════════════════
+#  TAB 5 — HISTÓRICO
 # ═══════════════════════════════════════════
 
 with tab_historico:
