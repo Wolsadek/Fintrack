@@ -125,6 +125,49 @@ def fmt_mes(mes_ano: str) -> str:
     return f"{nomes[mes]} {ano}"
 
 
+# Categorias que fazem sentido ter meta (gastos reais do dia-a-dia)
+CATEGORIAS_META = [
+    c for c in CATEGORIAS_LISTA
+    if c not in {"Receita", "Estorno", "Investimentos", "Fatura Cartão"}
+]
+
+
+def calcular_alertas(gastos_atual_df: pd.DataFrame, mes_atual: str) -> dict:
+    """Retorna categorias com gasto acima de 20% da média dos meses anteriores."""
+    todos_meses = db.get_meses_disponiveis()
+    meses_anteriores = [m for m in todos_meses if m != mes_atual]
+
+    if len(meses_anteriores) < 2:
+        return {}
+
+    historico = []
+    for m in meses_anteriores:
+        df_m = db.get_transacoes(m)
+        if df_m.empty:
+            continue
+        g = df_m[(df_m["valor"] < 0) & (~df_m["categoria"].isin(NAO_SAO_GASTOS))]
+        for cat, grp in g.groupby("categoria"):
+            historico.append({"categoria": cat, "valor": abs(grp["valor"].sum())})
+
+    if not historico:
+        return {}
+
+    media_por_cat = pd.DataFrame(historico).groupby("categoria")["valor"].mean()
+    gastos_cat_atual = gastos_atual_df.groupby("categoria")["valor"].sum().abs()
+
+    alertas = {}
+    for cat, valor_atual in gastos_cat_atual.items():
+        if cat in media_por_cat.index:
+            media = media_por_cat[cat]
+            if media > 0 and valor_atual > media * 1.2:
+                alertas[cat] = {
+                    "atual": valor_atual,
+                    "media": media,
+                    "pct_acima": ((valor_atual / media) - 1) * 100,
+                }
+    return alertas
+
+
 # ─────────────────── INICIALIZAÇÃO ───────────────────
 
 db.init_db()
@@ -222,6 +265,58 @@ with tab_resumo:
     with col6:
         st.metric("💳 Fatura paga", fmt_brl(fatura_paga),
                   help="Pagamento da fatura do cartão de crédito")
+
+    # ── Alertas de gasto alto ──
+    alertas = calcular_alertas(gastos_df, mes_sel)
+    if alertas:
+        st.markdown("---")
+        st.markdown("#### 🚨 Alertas")
+        for cat, info in alertas.items():
+            st.warning(
+                f"**{cat}**: {fmt_brl(info['atual'])} gastos — "
+                f"**{info['pct_acima']:.0f}% acima** da sua média histórica ({fmt_brl(info['media'])})"
+            )
+
+    st.markdown("---")
+
+    # ── Top 5 + Metas ──
+    col_top5, col_metas = st.columns(2)
+
+    with col_top5:
+        st.markdown("#### 🔝 Top 5 Maiores Gastos")
+        if not gastos_df.empty:
+            top5 = gastos_df.nsmallest(5, "valor")[
+                ["data", "descricao", "categoria", "valor"]
+            ].copy()
+            top5["data"] = top5["data"].dt.strftime("%d/%m")
+            top5["valor"] = top5["valor"].abs().apply(fmt_brl)
+            st.dataframe(
+                top5.rename(columns={
+                    "data": "Data", "descricao": "Descrição",
+                    "categoria": "Categoria", "valor": "Valor",
+                }),
+                hide_index=True,
+                use_container_width=True,
+            )
+
+    with col_metas:
+        st.markdown("#### 🎯 Metas do Mês")
+        metas = db.get_metas()
+        if metas:
+            gastos_por_cat = gastos_df.groupby("categoria")["valor"].sum().abs()
+            for cat, limite in sorted(metas.items()):
+                gasto = gastos_por_cat.get(cat, 0.0)
+                pct = gasto / limite
+                pct_bar = min(pct, 1.0)
+                icon = "🟢" if pct < 0.75 else ("🟡" if pct < 1.0 else "🔴")
+                st.markdown(
+                    f"{icon} **{cat}** — {fmt_brl(gasto)} / {fmt_brl(limite)} "
+                    f"({pct * 100:.0f}%)"
+                )
+                st.progress(pct_bar)
+        else:
+            st.caption("Nenhuma meta definida ainda.")
+            st.caption("Configure suas metas no final desta página.")
 
     st.markdown("---")
 
@@ -341,6 +436,40 @@ with tab_resumo:
             st.metric("Aplicado", fmt_brl(invest_aplicado))
             st.metric("Resgatado", fmt_brl(invest_resgatado))
             st.metric("Líquido investido", fmt_brl(invest_liquido))
+
+    # ── Gerenciar Metas ──
+    st.markdown("---")
+    with st.expander("⚙️ Gerenciar Metas por Categoria"):
+        st.caption("Define o limite máximo de gasto mensal por categoria.")
+        col_mc, col_mv, col_mb = st.columns([2, 2, 1])
+        with col_mc:
+            meta_cat = st.selectbox("Categoria", CATEGORIAS_META, key="meta_cat")
+        with col_mv:
+            metas_atuais = db.get_metas()
+            valor_existente = metas_atuais.get(meta_cat, 0.0)
+            meta_val = st.number_input(
+                "Limite mensal (R$)",
+                min_value=0.0,
+                value=valor_existente,
+                step=50.0,
+                key="meta_val",
+            )
+        with col_mb:
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("💾 Salvar", type="primary") and meta_val > 0:
+                db.salvar_meta(meta_cat, meta_val)
+                st.success(f"Meta salva!")
+                st.rerun()
+
+        if metas_atuais:
+            st.markdown("**Metas ativas:**")
+            for cat, limite in sorted(metas_atuais.items()):
+                c1, c2, c3 = st.columns([3, 2, 1])
+                c1.write(f"**{cat}**")
+                c2.write(fmt_brl(limite) + " / mês")
+                if c3.button("🗑️", key=f"del_meta_{cat}"):
+                    db.deletar_meta(cat)
+                    st.rerun()
 
 # ═══════════════════════════════════════════
 #  TAB 2 — TRANSAÇÕES

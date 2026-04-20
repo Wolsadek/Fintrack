@@ -25,6 +25,12 @@ def init_db():
             categoria TEXT NOT NULL
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS metas (
+            categoria    TEXT PRIMARY KEY,
+            valor_limite REAL NOT NULL
+        )
+    """)
     conn.commit()
     conn.close()
 
@@ -118,5 +124,31 @@ def salvar_regra(padrao: str, categoria: str):
 def deletar_regra(padrao: str):
     conn = sqlite3.connect(DB_PATH)
     conn.execute("DELETE FROM regras_categorias WHERE padrao = ?", (padrao,))
+    conn.commit()
+    conn.close()
+
+
+def get_metas() -> dict[str, float]:
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT categoria, valor_limite FROM metas ORDER BY categoria")
+    metas = {row[0]: row[1] for row in cursor.fetchall()}
+    conn.close()
+    return metas
+
+
+def salvar_meta(categoria: str, valor_limite: float):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "INSERT OR REPLACE INTO metas (categoria, valor_limite) VALUES (?, ?)",
+        (categoria, valor_limite),
+    )
+    conn.commit()
+    conn.close()
+
+
+def deletar_meta(categoria: str):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("DELETE FROM metas WHERE categoria = ?", (categoria,))
     conn.commit()
     conn.close()
