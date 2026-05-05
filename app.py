@@ -838,6 +838,25 @@ with tab_plan:
                     db.deletar_meta(cat)
                     st.rerun()
 
+    # ── Bloco de Notas ──
+    st.markdown("---")
+    st.markdown("#### 📝 Anotações")
+    notas_salvas = db.get_config("notas_planejamento", "")
+    notas_input = st.text_area(
+        "Escreva livremente — metas, ideias, lembretes...",
+        value=notas_salvas,
+        height=220,
+        placeholder="ex: ✔️ investir R$1000/mês em Santos\n✔️ manter R$300 em QQQ\n📈 aumentar Europa quando possível",
+        label_visibility="collapsed",
+    )
+    col_salvar_nota, col_info = st.columns([1, 4])
+    with col_salvar_nota:
+        if st.button("💾 Salvar anotações", type="primary"):
+            db.set_config("notas_planejamento", notas_input)
+            st.success("Salvo!")
+    with col_info:
+        st.caption("As anotações ficam salvas no banco local e não são enviadas para nenhuma IA.")
+
 # ═══════════════════════════════════════════
 #  TAB 4 — IA
 # ═══════════════════════════════════════════
