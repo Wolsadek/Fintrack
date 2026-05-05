@@ -37,6 +37,15 @@ def init_db():
             valor TEXT NOT NULL
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ia_historico (
+            id        INTEGER PRIMARY KEY AUTOINCREMENT,
+            data      TEXT    NOT NULL,
+            role      TEXT    NOT NULL,
+            conteudo  TEXT    NOT NULL,
+            arquivado INTEGER NOT NULL DEFAULT 0
+        )
+    """)
     conn.commit()
     conn.close()
 
@@ -177,3 +186,53 @@ def set_config(chave: str, valor: str):
     )
     conn.commit()
     conn.close()
+
+
+def salvar_mensagem(role: str, conteudo: str):
+    from datetime import datetime
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "INSERT INTO ia_historico (data, role, conteudo) VALUES (?, ?, ?)",
+        (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), role, conteudo),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_historico(limite: int = 100, so_ativos: bool = True) -> list[dict]:
+    """Retorna mensagens ordenadas do mais antigo ao mais recente."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    filtro = "WHERE arquivado = 0" if so_ativos else ""
+    cursor.execute(
+        f"SELECT id, data, role, conteudo FROM ia_historico {filtro} "
+        f"ORDER BY id DESC LIMIT ?",
+        (limite,),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [
+        {"id": r[0], "data": r[1], "role": r[2], "conteudo": r[3]}
+        for r in reversed(rows)
+    ]
+
+
+def arquivar_historico():
+    """Marca todas as mensagens ativas como arquivadas."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("UPDATE ia_historico SET arquivado = 1 WHERE arquivado = 0")
+    conn.commit()
+    conn.close()
+
+
+def get_stats_historico() -> dict:
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT COUNT(*), MIN(data), MAX(data) FROM ia_historico WHERE arquivado = 0"
+    )
+    total, primeira, ultima = cursor.fetchone()
+    cursor.execute("SELECT COUNT(*) FROM ia_historico WHERE arquivado = 1")
+    arquivadas = cursor.fetchone()[0]
+    conn.close()
+    return {"total": total or 0, "primeira": primeira, "ultima": ultima, "arquivadas": arquivadas}

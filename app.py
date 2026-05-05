@@ -742,8 +742,8 @@ with tab_ia:
     # ── Configuração ──
     with st.expander("⚙️ Configurar API"):
         st.markdown(
-            "O assistente usa o **Groq** (gratuito, rápido) ou **Google Gemini** (gratuito). "
-            "Crie uma conta em [groq.com](https://console.groq.com) e gere uma API Key."
+            "O assistente usa o **Groq** (gratuito, rápido). "
+            "Crie conta em [console.groq.com](https://console.groq.com), gere uma API Key e cole abaixo."
         )
         provedores = ["Groq (grátis — recomendado)", "Google Gemini (grátis)", "OpenAI"]
         prov_salvo = db.get_config("ia_provedor", provedores[0])
@@ -753,10 +753,9 @@ with tab_ia:
         with col_prov:
             provedor = st.selectbox("Provedor", provedores, index=prov_idx)
         with col_key:
-            api_key_salva = db.get_config("ia_api_key", "")
             api_key = st.text_input(
-                "API Key", value=api_key_salva, type="password",
-                placeholder="gsk_..."
+                "API Key", value=db.get_config("ia_api_key", ""),
+                type="password", placeholder="gsk_..."
             )
         if st.button("💾 Salvar configuração de IA"):
             db.set_config("ia_provedor", provedor)
@@ -764,9 +763,18 @@ with tab_ia:
             st.success("Configuração salva!")
             st.rerun()
 
+        # Stats do histórico
+        stats = db.get_stats_historico()
+        if stats["total"] > 0:
+            st.caption(
+                f"Histórico: **{stats['total']}** mensagens ativas "
+                f"(desde {stats['primeira'][:10] if stats['primeira'] else '—'}) · "
+                f"{stats['arquivadas']} arquivadas"
+            )
+
     api_key_ativa = db.get_config("ia_api_key", "")
 
-    # ── Contexto financeiro para a IA ──
+    # ── Contexto financeiro ──
     def montar_contexto() -> str:
         linhas = [
             f"Mês analisado: {fmt_mes(mes_sel)}",
@@ -775,24 +783,20 @@ with tab_ia:
             f"Gastos do dia-a-dia: {fmt_brl(total_gastos_reais)}",
             f"Investido (líquido): {fmt_brl(invest_liquido)}",
             f"Saldo do mês: {fmt_brl(saldo_mes)}",
-            "",
-            "Gastos por categoria:",
+            "", "Gastos por categoria:",
         ]
         if not gastos_df.empty:
             for cat, val in gastos_df.groupby("categoria")["valor"].sum().abs().sort_values(ascending=False).items():
                 linhas.append(f"  - {cat}: {fmt_brl(val)}")
-
         sal = db.get_config("salario_mensal")
         if sal:
-            linhas += ["", f"Salário mensal configurado: {fmt_brl(float(sal))}"]
-
+            linhas += ["", f"Salário mensal: {fmt_brl(float(sal))}"]
         metas = db.get_metas()
         if metas:
-            linhas.append("\nMetas configuradas:")
+            linhas.append("\nMetas:")
             for cat, lim in metas.items():
                 gasto = gastos_df[gastos_df["categoria"] == cat]["valor"].abs().sum()
-                linhas.append(f"  - {cat}: gasto {fmt_brl(gasto)} / limite {fmt_brl(lim)}")
-
+                linhas.append(f"  - {cat}: {fmt_brl(gasto)} / {fmt_brl(lim)}")
         return "\n".join(linhas)
 
     # ── Perguntas rápidas ──
@@ -813,19 +817,19 @@ with tab_ia:
 
     st.markdown("---")
 
-    # ── Chat ──
-    if "ia_messages" not in st.session_state:
-        st.session_state.ia_messages = []
-
-    for msg in st.session_state.ia_messages:
+    # ── Histórico persistido ──
+    historico_db = db.get_historico(limite=60)  # exibe últimas 60 mensagens
+    for msg in historico_db:
         with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
+            st.caption(msg["data"])
+            st.markdown(msg["conteudo"])
 
+    # ── Input ──
     prompt_input = st.chat_input("Pergunte sobre seus gastos...")
     prompt = pergunta_selecionada or prompt_input
 
     if prompt:
-        st.session_state.ia_messages.append({"role": "user", "content": prompt})
+        db.salvar_mensagem("user", prompt)
         with st.chat_message("user"):
             st.markdown(prompt)
 
@@ -838,36 +842,61 @@ with tab_ia:
                 st.markdown(resposta)
             else:
                 contexto = montar_contexto()
-                system_prompt = (
-                    "Você é um assistente financeiro pessoal especializado em finanças pessoais brasileiras. "
-                    "Responda de forma direta, prática e em português. Use os dados abaixo para embasar sua resposta.\n\n"
-                    f"DADOS FINANCEIROS DO USUÁRIO:\n{contexto}"
-                )
+                # Injeta histórico recente no prompt (últimas 40 msgs = 20 trocas)
+                historico_contexto = db.get_historico(limite=40)
+                msgs_api = [
+                    {
+                        "role": "system",
+                        "content": (
+                            "Você é um assistente financeiro pessoal. Responda de forma direta e prática em português. "
+                            "Use os dados financeiros abaixo para embasar suas respostas. "
+                            "Quando o usuário mencionar algo de conversas anteriores, use o histórico fornecido.\n\n"
+                            f"DADOS FINANCEIROS:\n{contexto}"
+                        ),
+                    }
+                ]
+                # Inclui histórico como mensagens reais (não só texto)
+                for m in historico_contexto:
+                    msgs_api.append({"role": m["role"], "content": m["conteudo"]})
+                msgs_api.append({"role": "user", "content": prompt})
+
                 try:
                     from groq import Groq
-                    client  = Groq(api_key=api_key_ativa)
-                    with st.spinner("Analisando seus dados..."):
+                    client = Groq(api_key=api_key_ativa)
+                    with st.spinner("Pensando..."):
                         completion = client.chat.completions.create(
                             model="llama-3.3-70b-versatile",
-                            messages=[
-                                {"role": "system",  "content": system_prompt},
-                                {"role": "user",    "content": prompt},
-                            ],
+                            messages=msgs_api,
                             max_tokens=1024,
                         )
                     resposta = completion.choices[0].message.content
                 except ImportError:
                     resposta = "⚠️ Instale a dependência: `pip install groq` e reinicie o app."
                 except Exception as e:
-                    resposta = f"⚠️ Erro ao conectar com a IA: {e}"
+                    resposta = f"⚠️ Erro: {e}"
                 st.markdown(resposta)
 
-        st.session_state.ia_messages.append({"role": "assistant", "content": resposta})
+        db.salvar_mensagem("assistant", resposta)
+        st.rerun()
 
-    if st.session_state.ia_messages:
-        if st.button("🗑️ Limpar conversa"):
-            st.session_state.ia_messages = []
-            st.rerun()
+    # ── Controles do histórico ──
+    if historico_db:
+        col_arq, col_del = st.columns([1, 1])
+        with col_arq:
+            if st.button("📦 Arquivar conversa", help="Move para arquivo, não apaga"):
+                db.arquivar_historico()
+                st.success("Conversa arquivada! Novo chat iniciado.")
+                st.rerun()
+        with col_del:
+            with st.expander("⚠️ Apagar histórico ativo"):
+                st.caption("Isso remove permanentemente as mensagens ativas.")
+                if st.button("🗑️ Confirmar exclusão", type="primary"):
+                    conn_tmp = __import__("sqlite3").connect(str(db.DB_PATH))
+                    conn_tmp.execute("DELETE FROM ia_historico WHERE arquivado = 0")
+                    conn_tmp.commit()
+                    conn_tmp.close()
+                    st.success("Histórico apagado.")
+                    st.rerun()
 
 # ═══════════════════════════════════════════
 #  TAB 5 — HISTÓRICO
