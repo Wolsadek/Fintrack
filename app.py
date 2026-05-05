@@ -209,8 +209,6 @@ with st.sidebar:
         st.stop()
 
     mes_sel = st.selectbox("Mês", meses, format_func=fmt_mes)
-
-    st.markdown("---")
     st.caption(f"Total de meses importados: **{len(meses)}**")
 
     # ── Bloco de Notas ──
