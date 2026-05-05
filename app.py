@@ -213,6 +213,22 @@ with st.sidebar:
     st.markdown("---")
     st.caption(f"Total de meses importados: **{len(meses)}**")
 
+    # ── Bloco de Notas ──
+    st.markdown("---")
+    st.markdown("##### 📝 Anotações")
+    notas_salvas_sb = db.get_config("notas_planejamento", "")
+    notas_input_sb = st.text_area(
+        "notas",
+        value=notas_salvas_sb,
+        height=180,
+        placeholder="Metas, lembretes, ideias...",
+        label_visibility="collapsed",
+        key="notas_sidebar",
+    )
+    if st.button("💾 Salvar", key="btn_notas_sb"):
+        db.set_config("notas_planejamento", notas_input_sb)
+        st.success("Salvo!")
+
 # ─────────────────── DADOS DO MÊS ───────────────────
 
 df = db.get_transacoes(mes_sel)
@@ -571,7 +587,7 @@ Transações:
                 st.markdown("**Sugestões da IA — revise e aplique:**")
 
                 selecionadas = {}
-                for s in sugestoes:
+                for i, s in enumerate(sugestoes):
                     desc  = s.get("descricao", "")
                     cat   = s.get("categoria", "Outros")
                     motivo = s.get("motivo", "")
@@ -580,11 +596,11 @@ Transações:
                     nova_cat_sug = col_c.selectbox(
                         "", CATEGORIAS_LISTA,
                         index=CATEGORIAS_LISTA.index(cat) if cat in CATEGORIAS_LISTA else 0,
-                        key=f"sug_{desc[:30]}",
+                        key=f"sug_{i}",
                         label_visibility="collapsed",
                     )
                     col_m.caption(motivo)
-                    aplicar = col_chk.checkbox("", value=True, key=f"chk_{desc[:30]}")
+                    aplicar = col_chk.checkbox("", value=True, key=f"chk_{i}")
                     if aplicar:
                         selecionadas[desc] = nova_cat_sug
 
@@ -837,25 +853,6 @@ with tab_plan:
                 if c3.button("🗑️", key=f"del_meta_{cat}"):
                     db.deletar_meta(cat)
                     st.rerun()
-
-    # ── Bloco de Notas ──
-    st.markdown("---")
-    st.markdown("#### 📝 Anotações")
-    notas_salvas = db.get_config("notas_planejamento", "")
-    notas_input = st.text_area(
-        "Escreva livremente — metas, ideias, lembretes...",
-        value=notas_salvas,
-        height=220,
-        placeholder="ex: ✔️ investir R$1000/mês em Santos\n✔️ manter R$300 em QQQ\n📈 aumentar Europa quando possível",
-        label_visibility="collapsed",
-    )
-    col_salvar_nota, col_info = st.columns([1, 4])
-    with col_salvar_nota:
-        if st.button("💾 Salvar anotações", type="primary"):
-            db.set_config("notas_planejamento", notas_input)
-            st.success("Salvo!")
-    with col_info:
-        st.caption("As anotações ficam salvas no banco local e não são enviadas para nenhuma IA.")
 
 # ═══════════════════════════════════════════
 #  TAB 4 — IA
