@@ -14,22 +14,108 @@ st.set_page_config(
 
 st.markdown("""
 <style>
+    /* ── Sidebar ── */
     [data-testid="stSidebar"] {
-        background-color: #0f0f23;
+        background-color: #0a0a0a;
+        border-right: 1px solid rgba(255,255,255,0.06);
     }
+
+    /* ── Metric cards ── */
     div[data-testid="metric-container"] {
-        background: rgba(255, 255, 255, 0.05);
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        border-radius: 12px;
-        padding: 16px 20px;
+        background: #16181a;
+        border: 1px solid rgba(255,255,255,0.12);
+        border-radius: 20px;
+        padding: 20px 24px;
+        transition: border-color 0.18s ease;
+    }
+    div[data-testid="metric-container"]:hover {
+        border-color: rgba(255,255,255,0.24);
     }
     div[data-testid="metric-container"] label {
-        color: #aaa !important;
+        color: rgba(255,255,255,0.6) !important;
+        font-size: 12px !important;
+        font-weight: 600 !important;
+        letter-spacing: 0.6px !important;
+        text-transform: uppercase !important;
+    }
+    div[data-testid="metric-container"] [data-testid="stMetricValue"] {
+        font-size: 26px !important;
+        font-weight: 600 !important;
+        letter-spacing: -0.4px !important;
+    }
+    div[data-testid="metric-container"] [data-testid="stMetricDelta"] {
         font-size: 13px !important;
     }
+
+    /* ── Tabs — pill nav ── */
+    .stTabs [data-baseweb="tab-list"] {
+        background: #16181a;
+        border-radius: 9999px;
+        padding: 4px 6px;
+        gap: 2px;
+        border: 1px solid rgba(255,255,255,0.08);
+    }
     .stTabs [data-baseweb="tab"] {
-        border-radius: 8px;
-        padding: 6px 18px;
+        border-radius: 9999px;
+        padding: 8px 20px;
+        font-size: 14px;
+        font-weight: 600;
+        letter-spacing: 0.2px;
+        color: rgba(255,255,255,0.55);
+        transition: color 0.15s ease;
+    }
+    .stTabs [aria-selected="true"] {
+        background: #494fdf !important;
+        color: #ffffff !important;
+    }
+    .stTabs [data-baseweb="tab-highlight"] {
+        display: none;
+    }
+
+    /* ── Buttons — pill shape ── */
+    .stButton > button {
+        border-radius: 9999px !important;
+        font-weight: 600 !important;
+        letter-spacing: 0.2px !important;
+        transition: opacity 0.15s ease !important;
+    }
+    .stButton > button:hover { opacity: 0.88 !important; }
+    .stButton > button[kind="primary"] {
+        background: #494fdf !important;
+        border: none !important;
+        color: #ffffff !important;
+    }
+    .stButton > button[kind="secondary"] {
+        border: 1px solid rgba(255,255,255,0.18) !important;
+    }
+
+    /* ── Expanders ── */
+    [data-testid="stExpander"] {
+        border: 1px solid rgba(255,255,255,0.08) !important;
+        border-radius: 16px !important;
+        background: #16181a !important;
+    }
+
+    /* ── Dividers ── */
+    hr {
+        border-color: rgba(255,255,255,0.06) !important;
+        margin: 1.2rem 0 !important;
+    }
+
+    /* ── Progress bars ── */
+    [data-testid="stProgressBar"] > div > div {
+        border-radius: 9999px;
+    }
+    [data-testid="stProgressBar"] > div {
+        border-radius: 9999px;
+        background: rgba(255,255,255,0.08);
+    }
+
+    /* ── Chat messages ── */
+    [data-testid="stChatMessage"] {
+        border-radius: 16px !important;
+        border: 1px solid rgba(255,255,255,0.07) !important;
+        background: #16181a !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -52,18 +138,18 @@ CATEGORIAS_LISTA = [
 ]
 
 CORES = {
-    "Alimentação":   "#FF6B6B",
-    "Transporte":    "#4ECDC4",
-    "Saúde":         "#45B7D1",
-    "Educação":      "#96CEB4",
-    "Esporte":       "#FFEAA7",
-    "Assinaturas":   "#C3A6FF",
-    "Investimentos": "#66BB6A",
-    "Fatura Cartão": "#FFA726",
-    "Lazer":         "#FF8A65",
-    "Receita":       "#26A69A",
-    "Estorno":       "#90A4AE",
-    "Outros":        "#78909C",
+    "Alimentação":   "#e61e49",   # accent-pink
+    "Transporte":    "#007bc2",   # accent-light-blue
+    "Saúde":         "#494fdf",   # primary cobalt
+    "Educação":      "#376cd5",   # accent-blue-link
+    "Esporte":       "#00a87e",   # accent-teal
+    "Assinaturas":   "#b09000",   # accent-yellow
+    "Investimentos": "#00a87e",   # accent-teal — crescimento
+    "Fatura Cartão": "#ec7e00",   # accent-warning
+    "Lazer":         "#e61e49",   # accent-pink
+    "Receita":       "#428619",   # accent-light-green
+    "Estorno":       "#5c5e60",   # ash
+    "Outros":        "#505a63",   # mute
 }
 
 # Regras em ordem de prioridade — mais específicas primeiro
