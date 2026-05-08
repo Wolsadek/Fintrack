@@ -947,11 +947,12 @@ with tab_ia:
 
     # ── Configuração ──
     with st.expander("⚙️ Configurar API"):
-        st.markdown(
-            "O assistente usa o **Groq** (gratuito, rápido). "
-            "Crie conta em [console.groq.com](https://console.groq.com), gere uma API Key e cole abaixo."
-        )
-        provedores = ["Groq (grátis — recomendado)", "Google Gemini (grátis)", "OpenAI"]
+        provedores = [
+            "Groq (grátis — recomendado)",
+            "Claude — Anthropic",
+            "Google Gemini (grátis)",
+            "OpenAI",
+        ]
         prov_salvo = db.get_config("ia_provedor", provedores[0])
         prov_idx   = provedores.index(prov_salvo) if prov_salvo in provedores else 0
 
@@ -959,10 +960,23 @@ with tab_ia:
         with col_prov:
             provedor = st.selectbox("Provedor", provedores, index=prov_idx)
         with col_key:
+            placeholders = {
+                "Groq (grátis — recomendado)": "gsk_...",
+                "Claude — Anthropic":           "sk-ant-...",
+                "Google Gemini (grátis)":       "AIza...",
+                "OpenAI":                       "sk-...",
+            }
+            links = {
+                "Groq (grátis — recomendado)": "https://console.groq.com",
+                "Claude — Anthropic":           "https://console.anthropic.com",
+                "Google Gemini (grátis)":       "https://aistudio.google.com/apikey",
+                "OpenAI":                       "https://platform.openai.com/api-keys",
+            }
             api_key = st.text_input(
                 "API Key", value=db.get_config("ia_api_key", ""),
-                type="password", placeholder="gsk_..."
+                type="password", placeholder=placeholders.get(provedor, "...")
             )
+            st.caption(f"Obtenha sua chave em: [{links[provedor]}]({links[provedor]})")
         if st.button("💾 Salvar configuração de IA"):
             db.set_config("ia_provedor", provedor)
             db.set_config("ia_api_key",  api_key)
@@ -1066,18 +1080,36 @@ with tab_ia:
                     msgs_api.append({"role": m["role"], "content": m["conteudo"]})
                 msgs_api.append({"role": "user", "content": prompt})
 
+                provedor_ativo = db.get_config("ia_provedor", "Groq (grátis — recomendado)")
                 try:
-                    from groq import Groq
-                    client = Groq(api_key=api_key_ativa)
                     with st.spinner("Pensando..."):
-                        completion = client.chat.completions.create(
-                            model="llama-3.3-70b-versatile",
-                            messages=msgs_api,
-                            max_tokens=1024,
-                        )
-                    resposta = completion.choices[0].message.content
-                except ImportError:
-                    resposta = "⚠️ Instale a dependência: `pip install groq` e reinicie o app."
+                        if "Claude" in provedor_ativo:
+                            import anthropic
+                            system_msg = msgs_api[0]["content"]
+                            msgs_claude = [
+                                {"role": m["role"], "content": m["content"]}
+                                for m in msgs_api[1:]
+                            ]
+                            cliente_claude = anthropic.Anthropic(api_key=api_key_ativa)
+                            resp_claude = cliente_claude.messages.create(
+                                model="claude-3-5-haiku-latest",
+                                max_tokens=1024,
+                                system=system_msg,
+                                messages=msgs_claude,
+                            )
+                            resposta = resp_claude.content[0].text
+                        else:
+                            from groq import Groq
+                            client = Groq(api_key=api_key_ativa)
+                            completion = client.chat.completions.create(
+                                model="llama-3.3-70b-versatile",
+                                messages=msgs_api,
+                                max_tokens=1024,
+                            )
+                            resposta = completion.choices[0].message.content
+                except ImportError as e:
+                    pkg = "anthropic" if "Claude" in provedor_ativo else "groq"
+                    resposta = f"⚠️ Instale a dependência: `pip install {pkg}` e reinicie o app."
                 except Exception as e:
                     resposta = f"⚠️ Erro: {e}"
                 st.markdown(resposta)
