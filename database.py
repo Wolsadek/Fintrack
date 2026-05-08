@@ -46,6 +46,16 @@ def init_db():
             arquivado INTEGER NOT NULL DEFAULT 0
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS investimentos (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticker       TEXT    NOT NULL,
+            quantidade   REAL    NOT NULL,
+            preco_medio  REAL    NOT NULL,
+            tipo         TEXT    NOT NULL DEFAULT 'ETF Internacional',
+            data_entrada TEXT    NOT NULL
+        )
+    """)
     conn.commit()
     conn.close()
 
@@ -221,6 +231,51 @@ def arquivar_historico():
     """Marca todas as mensagens ativas como arquivadas."""
     conn = sqlite3.connect(DB_PATH)
     conn.execute("UPDATE ia_historico SET arquivado = 1 WHERE arquivado = 0")
+    conn.commit()
+    conn.close()
+
+
+def get_investimentos() -> list[dict]:
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, ticker, quantidade, preco_medio, tipo, data_entrada "
+        "FROM investimentos ORDER BY tipo, ticker"
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [
+        {"id": r[0], "ticker": r[1], "quantidade": r[2],
+         "preco_medio": r[3], "tipo": r[4], "data_entrada": r[5]}
+        for r in rows
+    ]
+
+
+def salvar_investimento(ticker: str, quantidade: float, preco_medio: float,
+                        tipo: str, data_entrada: str):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "INSERT INTO investimentos (ticker, quantidade, preco_medio, tipo, data_entrada) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (ticker.upper().strip(), quantidade, preco_medio, tipo, data_entrada),
+    )
+    conn.commit()
+    conn.close()
+
+
+def update_investimento(id_: int, quantidade: float, preco_medio: float):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "UPDATE investimentos SET quantidade = ?, preco_medio = ? WHERE id = ?",
+        (quantidade, preco_medio, id_),
+    )
+    conn.commit()
+    conn.close()
+
+
+def deletar_investimento(id_: int):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("DELETE FROM investimentos WHERE id = ?", (id_,))
     conn.commit()
     conn.close()
 

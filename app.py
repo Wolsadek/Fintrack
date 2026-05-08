@@ -337,8 +337,8 @@ fatura_paga        = df[df["categoria"] == "Fatura Cartão"]["valor"].abs().sum(
 
 # ─────────────────── TABS ───────────────────
 
-tab_resumo, tab_transacoes, tab_plan, tab_ia, tab_historico = st.tabs(
-    ["📊 Resumo", "📋 Transações", "💡 Planejamento", "🤖 IA", "📈 Histórico"]
+tab_resumo, tab_transacoes, tab_plan, tab_invest, tab_ia, tab_historico = st.tabs(
+    ["📊 Resumo", "📋 Transações", "💡 Planejamento", "💼 Investimentos", "🤖 IA", "📈 Histórico"]
 )
 
 # ═══════════════════════════════════════════
@@ -939,7 +939,566 @@ with tab_plan:
                     st.rerun()
 
 # ═══════════════════════════════════════════
-#  TAB 4 — IA
+#  TAB 4 — INVESTIMENTOS
+# ═══════════════════════════════════════════
+
+TIPOS_ATIVO = ["ETF Internacional", "Stock (Ação EUA)", "Cripto", "FII", "Ação BR", "Renda Fixa", "Outro"]
+CORES_TIPO  = {
+    "ETF Internacional": "#494fdf",
+    "Stock (Ação EUA)":  "#00a87e",
+    "Cripto":            "#ec7e00",
+    "FII":               "#376cd5",
+    "Ação BR":           "#007bc2",
+    "Renda Fixa":        "#b09000",
+    "Outro":             "#5c5e60",
+}
+
+
+MOEDAS = {
+    "🇧🇷 Real (BRL)":        ("USDBRL=X",  False, "R$"),
+    "🇺🇸 Dólar (USD)":       (None,         False, "$"),
+    "🇪🇺 Euro (EUR)":         ("EURUSD=X",  True,  "€"),
+    "🇬🇧 Libra (GBP)":        ("GBPUSD=X",  True,  "£"),
+    "🇨🇦 C. Dollar (CAD)":   ("USDCAD=X",  False, "C$"),
+    "🇦🇺 A. Dollar (AUD)":   ("AUDUSD=X",  True,  "A$"),
+    "🇯🇵 Iene (JPY)":         ("USDJPY=X",  False, "¥"),
+    "🇨🇭 Franco (CHF)":       ("USDCHF=X",  False, "CHF"),
+}
+PERIODOS_MAP = {"6M": "6mo", "1A": "1y", "2A": "2y", "5A": "5y", "Máximo": "max"}
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def buscar_taxa_cambio(ticker: str | None, invert: bool) -> float:
+    """Retorna quantas unidades da moeda = 1 USD."""
+    if ticker is None:
+        return 1.0
+    try:
+        import yfinance as yf
+        hist = yf.Ticker(ticker).history(period="2d")
+        rate = float(hist["Close"].iloc[-1]) if not hist.empty else 1.0
+        return 1.0 / rate if invert else rate
+    except Exception:
+        return 1.0
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def buscar_historico_portfolio(tickers_qtds: tuple, periodo: str) -> pd.DataFrame:
+    """Histórico do portfolio em USD para o período dado."""
+    try:
+        import yfinance as yf
+        dfs = []
+        for ticker, qtd in tickers_qtds:
+            hist = yf.Ticker(ticker).history(period=periodo)["Close"]
+            dfs.append(hist * qtd)
+        if not dfs:
+            return pd.DataFrame()
+        total = pd.concat(dfs, axis=1).sum(axis=1).dropna()
+        total.index = total.index.tz_localize(None)
+        return total.reset_index().rename(columns={0: "valor", "Date": "data"})
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def buscar_cotacoes_yf(tickers: tuple[str, ...]) -> dict:
+    """Busca preço atual via yfinance. Cache de 1h."""
+    try:
+        import yfinance as yf
+        precos = {}
+        for ticker in tickers:
+            try:
+                hist = yf.Ticker(ticker).history(period="2d")
+                precos[ticker] = float(hist["Close"].iloc[-1]) if not hist.empty else None
+            except Exception:
+                precos[ticker] = None
+        return precos
+    except ImportError:
+        return {}
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def buscar_usdbrl() -> float:
+    try:
+        import yfinance as yf
+        hist = yf.Ticker("USDBRL=X").history(period="2d")
+        return float(hist["Close"].iloc[-1]) if not hist.empty else 5.85
+    except Exception:
+        return 5.85
+
+
+def fmt_usd(v: float) -> str:
+    return f"$ {abs(v):,.2f}"
+
+
+def formatar_ticker(ticker: str, tipo: str) -> str:
+    """Converte o ticker para o formato correto do Yahoo Finance."""
+    t = ticker.upper().strip()
+    if tipo == "Cripto":
+        if not t.endswith("-USD") and not t.endswith("-BTC") and not t.endswith("-ETH"):
+            return f"{t}-USD"
+    elif tipo in ("Ação BR", "FII"):
+        if not t.endswith(".SA"):
+            return f"{t}.SA"
+    return t
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def buscar_info_ativo(ticker: str) -> dict:
+    """Retorna nome e moeda do ativo. Cache de 24h."""
+    try:
+        import yfinance as yf
+        info = yf.Ticker(ticker).info
+        return {
+            "nome": info.get("longName") or info.get("shortName") or ticker,
+            "moeda": info.get("currency", "USD"),
+            "tipo_yf": info.get("quoteType", ""),
+        }
+    except Exception:
+        return {"nome": ticker, "moeda": "USD", "tipo_yf": ""}
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def pesquisar_ativos(query: str) -> list[dict]:
+    """Busca ativos por nome ou ticker via yfinance Search. Cache de 5 min."""
+    try:
+        import yfinance as yf
+        results = yf.Search(query, max_results=8)
+        return [
+            {
+                "symbol": q.get("symbol", ""),
+                "name":   q.get("shortname") or q.get("longname") or "",
+                "type":   q.get("quoteType", ""),
+                "exchange": q.get("exchDisp", ""),
+            }
+            for q in results.quotes
+            if q.get("symbol")
+        ]
+    except Exception:
+        return []
+
+
+with tab_invest:
+    st.markdown("### 💼 Carteira de Investimentos")
+
+    posicoes = db.get_investimentos()
+
+    # ── Busca cotações ──
+    tickers_uniq = tuple({p["ticker"] for p in posicoes}) if posicoes else ()
+    with st.spinner("Atualizando cotações...") if tickers_uniq else st.empty():
+        cotacoes  = buscar_cotacoes_yf(tickers_uniq) if tickers_uniq else {}
+        usdbrl    = buscar_usdbrl() if tickers_uniq else 5.85
+
+    # ── Cálculos ──
+    total_investido_usd = 0.0
+    valor_atual_usd     = 0.0
+    rows_tabela         = []
+
+    for p in posicoes:
+        custo   = p["quantidade"] * p["preco_medio"]
+        preco_a = cotacoes.get(p["ticker"])
+        atual   = p["quantidade"] * preco_a if preco_a else custo
+        lucro   = atual - custo
+        var_pct = (lucro / custo * 100) if custo > 0 else 0.0
+        total_investido_usd += custo
+        valor_atual_usd     += atual
+        rows_tabela.append({
+            "id":          p["id"],
+            "Ticker":      p["ticker"],
+            "Tipo":        p["tipo"],
+            "Qtd":         p["quantidade"],
+            "P. Médio":    p["preco_medio"],
+            "Custo (USD)": custo,
+            "P. Atual":    preco_a,
+            "Valor (USD)": atual,
+            "Lucro (USD)": lucro,
+            "Var %":       var_pct,
+        })
+
+    lucro_total_usd  = valor_atual_usd - total_investido_usd
+    variacao_pct     = (lucro_total_usd / total_investido_usd * 100) if total_investido_usd > 0 else 0.0
+    patrimonio_brl   = valor_atual_usd * usdbrl
+
+    # ── Cards resumo ──
+    if posicoes:
+        # Controles de moeda e período
+        ctrl1, ctrl2 = st.columns([2, 3])
+        with ctrl1:
+            moeda_sel = st.selectbox(
+                "Moeda",
+                list(MOEDAS.keys()),
+                index=0,  # BRL padrão
+                key="inv_moeda",
+                label_visibility="collapsed",
+            )
+        with ctrl2:
+            periodo_sel = st.radio(
+                "Período",
+                list(PERIODOS_MAP.keys()),
+                index=1,  # 1A padrão
+                horizontal=True,
+                key="inv_periodo",
+                label_visibility="collapsed",
+            )
+
+        ticker_cambio, invert_cambio, simbolo = MOEDAS[moeda_sel]
+        taxa_moeda = buscar_taxa_cambio(ticker_cambio, invert_cambio)
+
+        def fmt_inv(usd_val: float) -> str:
+            v = abs(usd_val) * taxa_moeda
+            if simbolo in ("R$",):
+                fmt = f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                return f"{simbolo} {fmt}"
+            elif simbolo == "¥":
+                return f"{simbolo} {v:,.0f}"
+            else:
+                return f"{simbolo} {v:,.2f}"
+
+        col1, col2, col3, col4 = st.columns(4)
+        nome_cambio = moeda_sel.split("(")[1].rstrip(")")
+
+        def _card(col, label: str, valor: str, sub: str, cor_valor: str = "white"):
+            col.markdown(
+                f"<div style='background:#16181a;border:1px solid rgba(255,255,255,0.12);"
+                f"border-radius:20px;padding:20px 24px;height:100%'>"
+                f"<div style='color:rgba(255,255,255,0.6);font-size:12px;font-weight:600;"
+                f"letter-spacing:.6px;text-transform:uppercase'>{label}</div>"
+                f"<div style='font-size:26px;font-weight:600;letter-spacing:-.4px;"
+                f"margin:6px 0 2px;color:{cor_valor}'>{valor}</div>"
+                f"<div style='font-size:12px;color:rgba(255,255,255,0.4)'>{sub}</div>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+
+        _card(col1, "💰 Patrimônio Total",
+              fmt_inv(valor_atual_usd),
+              f"{fmt_usd(valor_atual_usd)} · Investido: {fmt_inv(total_investido_usd)}")
+
+        lucro_cor = "#00a87e" if lucro_total_usd >= 0 else "#e61e49"
+        lucro_sinal = "📈" if lucro_total_usd >= 0 else "📉"
+        _card(col2, f"{lucro_sinal} Lucro / Prejuízo",
+              fmt_inv(lucro_total_usd),
+              fmt_usd(lucro_total_usd),
+              cor_valor=lucro_cor)
+
+        var_cor = "#00a87e" if variacao_pct >= 0 else "#e61e49"
+        _card(col3, "📊 Variação",
+              f"{variacao_pct:+.2f}%",
+              "vs. preço médio de compra",
+              cor_valor=var_cor)
+
+        _card(col4, f"💱 USD/{nome_cambio}",
+              f"{simbolo} {taxa_moeda:.4f}" if simbolo != "$" else "$ 1.0000",
+              "Yahoo Finance · 1h cache")
+
+        st.markdown("---")
+
+        # ── Gráficos ──
+        df_tab    = pd.DataFrame(rows_tabela)
+        col_g1, col_g2 = st.columns([3, 2])
+
+        with col_g1:
+            tickers_qtds_key = tuple((p["ticker"], p["quantidade"]) for p in posicoes)
+            periodo_yf       = PERIODOS_MAP[periodo_sel]
+            df_evolucao      = buscar_historico_portfolio(tickers_qtds_key, periodo_yf)
+
+            if not df_evolucao.empty:
+                df_evolucao["valor_conv"] = df_evolucao["valor"] * taxa_moeda
+
+                # Agrega em candles mensais (OHLC)
+                df_ohlc = (
+                    df_evolucao.set_index("data")["valor_conv"]
+                    .resample("ME")
+                    .ohlc()
+                    .dropna()
+                    .reset_index()
+                )
+                df_ohlc["retorno"]     = df_ohlc["close"] - df_ohlc["open"]
+                df_ohlc["cor_retorno"] = df_ohlc["retorno"].apply(
+                    lambda v: "#00a87e" if v >= 0 else "#e61e49"
+                )
+
+                # Cobalt para todos os meses — altura já mostra crescimento/queda
+                # Retorno abaixo: teal positivo, cobalt transparente negativo
+                df_ohlc["cor_ret"] = df_ohlc["retorno"].apply(
+                    lambda v: "#00a87e" if v >= 0 else "rgba(73,79,223,0.45)"
+                )
+
+                # Zoom no eixo Y para realçar as diferenças
+                y_min = df_ohlc["close"].min()
+                y_max = df_ohlc["close"].max()
+                y_pad = (y_max - y_min) * 0.15 or y_max * 0.1
+
+                fig_vela = go.Figure()
+
+                # Retângulos — todos partindo da base (y_min - pad), sem flutuar
+                fig_vela.add_trace(go.Bar(
+                    x=df_ohlc["data"],
+                    y=df_ohlc["close"] - (y_min - y_pad),
+                    base=y_min - y_pad,
+                    name="Patrimônio",
+                    marker=dict(
+                        color="#494fdf",
+                        cornerradius=6,
+                        line_width=0,
+                    ),
+                    hovertemplate=(
+                        f"%{{x|%b %Y}}<br>"
+                        f"Valor: {simbolo}%{{customdata:,.2f}}<extra></extra>"
+                    ),
+                    customdata=df_ohlc["close"],
+                    yaxis="y",
+                ))
+
+                # Barras de retorno mensal abaixo
+                fig_vela.add_trace(go.Bar(
+                    x=df_ohlc["data"],
+                    y=df_ohlc["retorno"],
+                    name="Retorno",
+                    marker=dict(color=df_ohlc["cor_ret"], cornerradius=4, line_width=0),
+                    opacity=0.85,
+                    yaxis="y2",
+                    hovertemplate=f"%{{x|%b %Y}}<br>{simbolo}%{{y:,.2f}}<extra></extra>",
+                ))
+
+                fig_vela.update_layout(
+                    title=f"Evolução do Patrimônio — {periodo_sel}",
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    font_color="white",
+                    bargap=0.15,
+                    xaxis=dict(
+                        gridcolor="rgba(255,255,255,0.06)",
+                        showgrid=False,
+                        type="date",
+                    ),
+                    yaxis=dict(
+                        title=nome_cambio,
+                        gridcolor="rgba(255,255,255,0.08)",
+                        domain=[0.30, 1.0],
+                        range=[y_min - y_pad, y_max + y_pad],
+                    ),
+                    yaxis2=dict(
+                        title="Retorno",
+                        gridcolor="rgba(255,255,255,0.06)",
+                        domain=[0.0, 0.25],
+                        zeroline=True,
+                        zerolinecolor="rgba(255,255,255,0.2)",
+                    ),
+                    margin=dict(l=0, r=0, t=40, b=0),
+                    height=380,
+                    showlegend=False,
+                )
+                st.plotly_chart(fig_vela, use_container_width=True)
+            else:
+                st.info("Histórico não disponível para os tickers cadastrados.")
+
+        with col_g2:
+            alocacao = df_tab.groupby("Tipo")["Valor (USD)"].sum().reset_index()
+            fig_donut = go.Figure(go.Pie(
+                labels=alocacao["Tipo"],
+                values=alocacao["Valor (USD)"],
+                hole=0.55,
+                marker_colors=[CORES_TIPO.get(t, "#78909c") for t in alocacao["Tipo"]],
+                textinfo="label+percent",
+                hovertemplate="%{label}<br>%{value:,.2f} USD<br>%{percent}<extra></extra>",
+            ))
+            fig_donut.update_layout(
+                title="Ativos na Carteira",
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                font_color="white",
+                showlegend=True,
+                legend=dict(orientation="v", x=1.0, y=0.5),
+                margin=dict(l=0, r=0, t=40, b=0),
+                height=300,
+            )
+            st.plotly_chart(fig_donut, use_container_width=True)
+
+        # ── Tabela de posições ──
+        st.markdown("#### Meus Ativos")
+        for row in sorted(rows_tabela, key=lambda r: -r["Valor (USD)"]):
+            var_cor  = "#00a87e" if row["Var %"] >= 0 else "#e61e49"
+            seta     = "▲" if row["Var %"] >= 0 else "▼"
+            # Preços de mercado sempre em USD (são cotações da bolsa americana)
+            preco_a_str = fmt_usd(row["P. Atual"]) if row["P. Atual"] else "—"
+            pct_cart    = (row["Valor (USD)"] / valor_atual_usd * 100) if valor_atual_usd > 0 else 0
+
+            with st.container():
+                c1, c2, c3, c4, c5, c6, c7 = st.columns([2, 2, 1.5, 1.5, 1.5, 2, 1])
+                info_ativo = buscar_info_ativo(row["Ticker"])
+                nome_ativo = info_ativo["nome"] if info_ativo["nome"] != row["Ticker"] else row["Tipo"]
+                c1.markdown(
+                    f"**{row['Ticker']}**  \n"
+                    f"<small style='color:rgba(255,255,255,0.5)'>{nome_ativo[:35]}</small>",
+                    unsafe_allow_html=True,
+                )
+                c2.markdown(f"<small style='color:rgba(255,255,255,0.5)'>Qtd</small>  \n{row['Qtd']:.8f}", unsafe_allow_html=True)
+                _pm_str    = fmt_usd(row['P. Médio']).replace("$", "&#36;")
+                _custo_str = fmt_inv(row['Custo (USD)']).replace("$", "&#36;")
+                c3.markdown(
+                    f"<small style='color:rgba(255,255,255,0.5)'>P. Médio (USD)</small><br>"
+                    f"<span style='white-space:nowrap'>{_pm_str}</span><br>"
+                    f"<small style='color:rgba(255,255,255,0.35)'>Custo: {_custo_str}</small>",
+                    unsafe_allow_html=True,
+                )
+                c4.markdown(f"<small style='color:rgba(255,255,255,0.5)'>P. Atual (USD)</small>  \n{preco_a_str}", unsafe_allow_html=True)
+                c5.markdown(f"<small style='color:rgba(255,255,255,0.5)'>Valor</small>  \n{fmt_inv(row['Valor (USD)'])}", unsafe_allow_html=True)
+                c6.markdown(
+                    f"<small style='color:rgba(255,255,255,0.5)'>Variação</small>  \n"
+                    f"<span style='color:{var_cor}'>{seta} {row['Var %']:+.2f}% &nbsp; {fmt_inv(row['Lucro (USD)'])}</span>",
+                    unsafe_allow_html=True,
+                )
+                c7.markdown(f"<small style='color:rgba(255,255,255,0.5)'>Carteira</small>  \n{pct_cart:.1f}%", unsafe_allow_html=True)
+            st.markdown("<hr style='margin:6px 0;border-color:rgba(255,255,255,0.06)'>", unsafe_allow_html=True)
+
+    else:
+        st.info("Nenhuma posição cadastrada ainda. Adicione sua primeira abaixo.")
+
+    # ── Formulário de entrada ──
+    st.markdown("---")
+    with st.expander("➕ Adicionar / Gerenciar Posições", expanded=not posicoes):
+        st.markdown("**Nova posição**")
+
+        # ── Busca de ativo (search-as-you-type) ──
+        busca_query = st.text_input(
+            "Buscar ativo",
+            placeholder="Digite o nome ou ticker: Bitcoin, QQQ, Petrobras...",
+            key="inv_busca_query",
+        )
+
+        ticker_escolhido = ""
+        nome_escolhido   = ""
+
+        if len(busca_query) >= 2:
+            resultados = pesquisar_ativos(busca_query)
+            if resultados:
+                opcoes_labels = [
+                    f"{r['symbol']}  —  {r['name']}  ({r['exchange']})"
+                    for r in resultados
+                ]
+                escolha_idx = st.selectbox(
+                    "Selecionar ativo",
+                    range(len(opcoes_labels)),
+                    format_func=lambda i: opcoes_labels[i],
+                    key="inv_busca_sel",
+                    label_visibility="collapsed",
+                )
+                ticker_escolhido = resultados[escolha_idx]["symbol"]
+                nome_escolhido   = resultados[escolha_idx]["name"]
+                st.caption(f"Ticker selecionado: **{ticker_escolhido}**")
+            else:
+                st.caption("Nenhum resultado encontrado. Tente outro termo.")
+
+        # ── Linha 2: tipo + quantidade + preço médio + moeda entrada + salvar ──
+        f1, f2, f3, f4, f5 = st.columns([2, 2, 1, 2, 1])
+        with f1:
+            novo_tipo = st.selectbox("Tipo", TIPOS_ATIVO, key="inv_tipo")
+        with f2:
+            nova_qtd = st.number_input("Quantidade", min_value=0.0, step=0.00000001, format="%.8f", key="inv_qtd")
+        with f3:
+            modo_add = st.selectbox(
+                "Modo",
+                options=["PM $", "PM R$", "Tot $", "Tot R$"],
+                key="inv_pm_modo",
+                label_visibility="collapsed",
+                help="PM = preço por unidade · Tot = total gasto na compra",
+            )
+            is_total_add = modo_add.startswith("Tot")
+            moeda_pm     = "BRL" if "R$" in modo_add else "USD"
+        with f4:
+            taxa_atual = buscar_usdbrl()
+            label_pm   = f"{'Total' if is_total_add else 'P. Médio'} ({moeda_pm})"
+            novo_input_add = st.number_input(label_pm, min_value=0.0, step=0.01,
+                                             format="%.2f", key="inv_pm")
+            if novo_input_add > 0:
+                if is_total_add:
+                    qtd_add_ref = nova_qtd if nova_qtd > 0 else 1
+                    tot_usd_add = novo_input_add if moeda_pm == "USD" else novo_input_add / taxa_atual
+                    novo_pm_usd = tot_usd_add / qtd_add_ref
+                    st.caption(f"PM ≈ {fmt_usd(novo_pm_usd)}/uni")
+                else:
+                    novo_pm_usd = novo_input_add if moeda_pm == "USD" else novo_input_add / taxa_atual
+                    custo_brl_a = novo_pm_usd * nova_qtd * taxa_atual
+                    if nova_qtd > 0:
+                        brl_a_str = f"R$ {custo_brl_a:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                        st.caption(f"Total ≈ {brl_a_str}")
+                    else:
+                        st.caption(f"≈ {fmt_usd(novo_pm_usd)} USD")
+            else:
+                novo_pm_usd = 0.0
+        with f5:
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("➕ Salvar", type="primary", key="inv_add"):
+                if ticker_escolhido and nova_qtd > 0 and novo_pm_usd > 0:
+                    from datetime import date
+                    db.salvar_investimento(ticker_escolhido, nova_qtd, novo_pm_usd, novo_tipo, str(date.today()))
+                    st.success(f"✅ {ticker_escolhido} — {nome_escolhido} adicionado!")
+                    st.cache_data.clear()
+                    st.rerun()
+                elif not ticker_escolhido:
+                    st.warning("Busque e selecione um ativo primeiro.")
+                else:
+                    st.warning("Preencha quantidade e preço médio.")
+
+        if posicoes:
+            st.markdown("**Posições cadastradas**")
+            st.caption("Modo de edição — PM USD · PM BRL · Tot USD · Tot BRL (tot = total gasto, PM = preço por unidade)")
+            taxa_edit = buscar_usdbrl()
+            for p in posicoes:
+                pc1, pc2, pc3, pc4, pc5, pc6 = st.columns([2.5, 2, 1.2, 2, 1, 1])
+                pc1.write(f"**{p['ticker']}** — {p['tipo']}")
+                new_qtd = pc2.number_input("Qtd", value=p["quantidade"], step=0.00000001,
+                                           format="%.8f", key=f"eq_{p['id']}", label_visibility="collapsed")
+
+                modo_edit = pc3.selectbox(
+                    "Modo",
+                    options=["PM $", "PM R$", "Tot $", "Tot R$"],
+                    key=f"emm_{p['id']}",
+                    label_visibility="collapsed",
+                )
+                is_total_e = modo_edit.startswith("Tot")
+                moeda_edit = "BRL" if "R$" in modo_edit else "USD"
+                qtd_ref    = new_qtd if new_qtd > 0 else p["quantidade"]
+
+                if is_total_e:
+                    custo_usd_e = p["preco_medio"] * qtd_ref
+                    default_e   = custo_usd_e if moeda_edit == "USD" else custo_usd_e * taxa_edit
+                    label_e     = f"Total ({moeda_edit})"
+                else:
+                    default_e = p["preco_medio"] if moeda_edit == "USD" else p["preco_medio"] * taxa_edit
+                    label_e   = f"PM ({moeda_edit})"
+
+                new_input_e = pc4.number_input(
+                    label_e,
+                    value=round(default_e, 2), step=0.01, format="%.2f",
+                    key=f"ep_{p['id']}_{modo_edit}",   # key muda ao trocar modo → reseta campo
+                    label_visibility="collapsed",
+                )
+
+                if new_input_e > 0:
+                    if is_total_e:
+                        tot_usd_e  = new_input_e if moeda_edit == "USD" else new_input_e / taxa_edit
+                        new_pm_usd = tot_usd_e / qtd_ref if qtd_ref > 0 else 0
+                        pc4.caption(f"PM ≈ {fmt_usd(new_pm_usd)}/uni")
+                    else:
+                        new_pm_usd  = new_input_e if moeda_edit == "USD" else new_input_e / taxa_edit
+                        custo_brl_e = new_pm_usd * qtd_ref * taxa_edit
+                        brl_str     = f"R$ {custo_brl_e:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                        pc4.caption(f"Total ≈ {brl_str}")
+                else:
+                    new_pm_usd = p["preco_medio"]
+
+                if pc5.button("💾", key=f"eu_{p['id']}", help="Salvar"):
+                    db.update_investimento(p["id"], new_qtd, new_pm_usd)
+                    st.cache_data.clear()
+                    st.rerun()
+                if pc6.button("🗑️", key=f"ed_{p['id']}", help="Excluir"):
+                    db.deletar_investimento(p["id"])
+                    st.cache_data.clear()
+                    st.rerun()
+
+# ═══════════════════════════════════════════
+#  TAB 5 — IA
 # ═══════════════════════════════════════════
 
 with tab_ia:
@@ -1017,6 +1576,32 @@ with tab_ia:
             for cat, lim in metas.items():
                 gasto = gastos_df[gastos_df["categoria"] == cat]["valor"].abs().sum()
                 linhas.append(f"  - {cat}: {fmt_brl(gasto)} / {fmt_brl(lim)}")
+        # Carteira de investimentos
+        inv_posicoes = db.get_investimentos()
+        if inv_posicoes:
+            taxa = buscar_usdbrl()
+            linhas.append("\nCarteira de investimentos internacionais (Nomad):")
+            linhas.append(f"  USD/BRL atual: R$ {taxa:.4f}")
+            tot_inv_usd  = sum(p["quantidade"] * p["preco_medio"] for p in inv_posicoes)
+            cots_atual   = buscar_cotacoes_yf(tuple({p["ticker"] for p in inv_posicoes}))
+            tot_atual_usd = sum(
+                p["quantidade"] * (cots_atual.get(p["ticker"]) or p["preco_medio"])
+                for p in inv_posicoes
+            )
+            lucro_inv = tot_atual_usd - tot_inv_usd
+            var_inv   = (lucro_inv / tot_inv_usd * 100) if tot_inv_usd > 0 else 0
+            linhas.append(f"  Patrimônio atual: {fmt_usd(tot_atual_usd)} ({fmt_brl(tot_atual_usd * taxa)})")
+            linhas.append(f"  Total investido: {fmt_usd(tot_inv_usd)}")
+            linhas.append(f"  Lucro: {fmt_usd(lucro_inv)} ({var_inv:+.2f}%)")
+            for p in inv_posicoes:
+                preco_a = cots_atual.get(p["ticker"]) or p["preco_medio"]
+                valor_a = p["quantidade"] * preco_a
+                lucro_p = valor_a - p["quantidade"] * p["preco_medio"]
+                linhas.append(
+                    f"  - {p['ticker']} ({p['tipo']}): {p['quantidade']:.8f} cotas, "
+                    f"PM ${p['preco_medio']:.2f}, atual ${preco_a:.2f}, "
+                    f"valor ${valor_a:.2f} ({lucro_p:+.2f} USD)"
+                )
         return "\n".join(linhas)
 
     # ── Perguntas rápidas ──
