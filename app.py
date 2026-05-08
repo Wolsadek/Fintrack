@@ -1396,36 +1396,19 @@ with tab_invest:
         with f2:
             nova_qtd = st.number_input("Quantidade", min_value=0.0, step=0.00000001, format="%.8f", key="inv_qtd")
         with f3:
-            modo_add = st.selectbox(
-                "Modo",
-                options=["PM $", "PM R$", "Tot $", "Tot R$"],
-                key="inv_pm_modo",
-                label_visibility="collapsed",
-                help="PM = preço por unidade · Tot = total gasto na compra",
-            )
-            is_total_add = modo_add.startswith("Tot")
-            moeda_pm     = "BRL" if "R$" in modo_add else "USD"
+            moeda_pm = st.radio("Moeda do preço", ["USD", "BRL"], key="inv_pm_moeda",
+                                label_visibility="collapsed", horizontal=False)
         with f4:
-            taxa_atual = buscar_usdbrl()
-            label_pm   = f"{'Total' if is_total_add else 'P. Médio'} ({moeda_pm})"
-            novo_input_add = st.number_input(label_pm, min_value=0.0, step=0.01,
-                                             format="%.2f", key="inv_pm")
-            if novo_input_add > 0:
-                if is_total_add:
-                    qtd_add_ref = nova_qtd if nova_qtd > 0 else 1
-                    tot_usd_add = novo_input_add if moeda_pm == "USD" else novo_input_add / taxa_atual
-                    novo_pm_usd = tot_usd_add / qtd_add_ref
-                    st.caption(f"PM ≈ {fmt_usd(novo_pm_usd)}/uni")
-                else:
-                    novo_pm_usd = novo_input_add if moeda_pm == "USD" else novo_input_add / taxa_atual
-                    custo_brl_a = novo_pm_usd * nova_qtd * taxa_atual
-                    if nova_qtd > 0:
-                        brl_a_str = f"R$ {custo_brl_a:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-                        st.caption(f"Total ≈ {brl_a_str}")
-                    else:
-                        st.caption(f"≈ {fmt_usd(novo_pm_usd)} USD")
-            else:
-                novo_pm_usd = 0.0
+            taxa_atual  = buscar_usdbrl()
+            label_pm    = f"P. Médio ({moeda_pm})"
+            hint_pm     = f"Ex: 627623.04 (sem ponto de milhar)" if moeda_pm == "BRL" else "Valor em dólares"
+            novo_pm_raw = st.number_input(label_pm, min_value=0.0, step=0.01,
+                                          format="%.2f", key="inv_pm", help=hint_pm)
+            novo_pm_usd = novo_pm_raw / taxa_atual if moeda_pm == "BRL" else novo_pm_raw
+            if novo_pm_raw > 0 and nova_qtd > 0:
+                custo_brl_n = novo_pm_usd * nova_qtd * taxa_atual
+                brl_n_str   = f"R$ {custo_brl_n:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                st.caption(f"Total ≈ {brl_n_str}")
         with f5:
             st.markdown("<br>", unsafe_allow_html=True)
             if st.button("➕ Salvar", type="primary", key="inv_add"):
@@ -1442,52 +1425,26 @@ with tab_invest:
 
         if posicoes:
             st.markdown("**Posições cadastradas**")
-            st.caption("Modo de edição — PM USD · PM BRL · Tot USD · Tot BRL (tot = total gasto, PM = preço por unidade)")
             taxa_edit = buscar_usdbrl()
             for p in posicoes:
-                pc1, pc2, pc3, pc4, pc5, pc6 = st.columns([2.5, 2, 1.2, 2, 1, 1])
+                pc1, pc2, pc3, pc4, pc5, pc6 = st.columns([2.5, 2, 1, 2, 1, 1])
                 pc1.write(f"**{p['ticker']}** — {p['tipo']}")
                 new_qtd = pc2.number_input("Qtd", value=p["quantidade"], step=0.00000001,
                                            format="%.8f", key=f"eq_{p['id']}", label_visibility="collapsed")
-
-                modo_edit = pc3.selectbox(
-                    "Modo",
-                    options=["PM $", "PM R$", "Tot $", "Tot R$"],
-                    key=f"emm_{p['id']}",
+                moeda_edit = pc3.radio("M", ["USD", "BRL"], key=f"em_{p['id']}",
+                                       label_visibility="collapsed")
+                pm_display = p["preco_medio"] if moeda_edit == "USD" else p["preco_medio"] * taxa_edit
+                new_pm_raw = pc4.number_input(
+                    f"P. Médio ({moeda_edit})",
+                    value=round(pm_display, 2), step=0.01, format="%.2f",
+                    key=f"ep_{p['id']}_{moeda_edit}",
                     label_visibility="collapsed",
                 )
-                is_total_e = modo_edit.startswith("Tot")
-                moeda_edit = "BRL" if "R$" in modo_edit else "USD"
-                qtd_ref    = new_qtd if new_qtd > 0 else p["quantidade"]
-
-                if is_total_e:
-                    custo_usd_e = p["preco_medio"] * qtd_ref
-                    default_e   = custo_usd_e if moeda_edit == "USD" else custo_usd_e * taxa_edit
-                    label_e     = f"Total ({moeda_edit})"
-                else:
-                    default_e = p["preco_medio"] if moeda_edit == "USD" else p["preco_medio"] * taxa_edit
-                    label_e   = f"PM ({moeda_edit})"
-
-                new_input_e = pc4.number_input(
-                    label_e,
-                    value=round(default_e, 2), step=0.01, format="%.2f",
-                    key=f"ep_{p['id']}_{modo_edit}",   # key muda ao trocar modo → reseta campo
-                    label_visibility="collapsed",
-                )
-
-                if new_input_e > 0:
-                    if is_total_e:
-                        tot_usd_e  = new_input_e if moeda_edit == "USD" else new_input_e / taxa_edit
-                        new_pm_usd = tot_usd_e / qtd_ref if qtd_ref > 0 else 0
-                        pc4.caption(f"PM ≈ {fmt_usd(new_pm_usd)}/uni")
-                    else:
-                        new_pm_usd  = new_input_e if moeda_edit == "USD" else new_input_e / taxa_edit
-                        custo_brl_e = new_pm_usd * qtd_ref * taxa_edit
-                        brl_str     = f"R$ {custo_brl_e:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-                        pc4.caption(f"Total ≈ {brl_str}")
-                else:
-                    new_pm_usd = p["preco_medio"]
-
+                new_pm_usd = new_pm_raw / taxa_edit if moeda_edit == "BRL" else new_pm_raw
+                if new_pm_raw > 0:
+                    custo_brl_e = new_pm_usd * new_qtd * taxa_edit
+                    brl_str = f"R$ {custo_brl_e:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                    pc4.caption(f"Total ≈ {brl_str}")
                 if pc5.button("💾", key=f"eu_{p['id']}", help="Salvar"):
                     db.update_investimento(p["id"], new_qtd, new_pm_usd)
                     st.cache_data.clear()
