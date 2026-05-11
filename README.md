@@ -1,9 +1,10 @@
 # 💰 financas
 
-Dashboard pessoal de controle financeiro. Importa extratos do Nubank em CSV, categoriza automaticamente e exibe gráficos de gastos, receitas e investimentos.
+Dashboard pessoal de controle financeiro. Importa extratos do Nubank em CSV, categoriza automaticamente e exibe gráficos de gastos, receitas e investimentos — tudo rodando local, sem depender de nenhum serviço externo além das cotações do Yahoo Finance.
 
 ## Funcionalidades
 
+**Extratos e gastos**
 - Upload de extrato CSV do Nubank (sem duplicatas — pode subir o mesmo arquivo várias vezes)
 - Categorização automática por palavras-chave (com regras personalizáveis)
 - **Categorização com IA** — analisa transações em "Outros" e sugere categorias automaticamente
@@ -14,11 +15,31 @@ Dashboard pessoal de controle financeiro. Importa extratos do Nubank em CSV, cat
 - Metas por categoria com barra de progresso
 - Alertas de gasto alto (comparado com média histórica)
 - Top 5 maiores gastos do mês
-- Aba Planejamento: regra 50/30/20, projeção de poupança, custo em dias de trabalho
-- Assistente de IA (Groq) com histórico persistente
-- Histórico comparativo entre meses
 - Exportação CSV com categorias aplicadas
+
+**Planejamento**
+- Regra 50/30/20, projeção de poupança, custo em dias de trabalho
+- Bloco de anotações pessoais na sidebar
+
+**Carteira de Investimentos** *(inspirado no Investidor10)*
+- Cadastro manual de posições: ações, ETFs, criptos, FIIs — qualquer ativo do Yahoo Finance
+- Cotações em tempo real via Yahoo Finance
+- Multi-moeda: visualize o patrimônio em BRL, USD, EUR, GBP, JPY, ARS e mais
+- Cards de resumo: Patrimônio Total, Lucro/Prejuízo, Variação %, câmbio atual
+- Gráfico de evolução do patrimônio (mensal) com seletor de período
+- Gráfico de alocação por tipo de ativo (donut)
+- Tabela de posições com P. Médio, P. Atual, Custo Total, Variação por ativo
+- Busca de ativos por nome ou ticker com sugestão automática (search-as-you-type)
+- Preço médio pode ser informado em USD ou BRL, com conversão automática
+
+**IA e histórico**
+- Assistente de IA (Groq / Claude / Gemini) com histórico persistente
+- A IA tem acesso ao resumo do portfólio e ao histórico de gastos para dar conselhos contextualizados
+- Histórico comparativo entre meses
+
+**Geral**
 - Banco SQLite local (~2 MB para 3 anos de dados)
+- Design escuro inspirado no Revolut
 
 ## Instalação local
 
@@ -33,12 +54,24 @@ Abre em: http://localhost:8501
 
 ## Como usar
 
+**Extratos**
 1. No app do Nubank: **Perfil → Extratos → seleciona o mês → exportar CSV**
-2. Na sidebar do dashboard: clica em **"Importar extrato Nubank"** e sobe o arquivo
+2. Na sidebar: clica em **"Importar extrato Nubank"** e sobe o arquivo
 3. O app categoriza automaticamente e salva no banco local (`data/financas.db`)
 4. Para ajustar categorias erradas: aba **Transações** → edita na tabela → **Salvar alterações**
-5. Para criar regras para próximos uploads: aba **Transações** → **⚙️ Regras de Categorização Automática**
-6. Para categorizar transações "Outros" com IA: aba **Transações** → **🤖 Categorizar 'Outros' com IA**
+5. Para criar regras automáticas: aba **Transações** → **⚙️ Regras de Categorização**
+6. Para categorizar "Outros" com IA: aba **Transações** → **🤖 Categorizar com IA**
+
+**Carteira de Investimentos**
+1. Acesse a aba **💼 Investimentos**
+2. Clique em **➕ Adicionar / Gerenciar Posições**
+3. Na busca, digite o nome ou ticker do ativo (ex: `Bitcoin`, `QQQ`, `Petrobras`)
+4. Selecione o ativo na lista de sugestões
+5. Informe a quantidade e o preço médio de compra (em USD ou BRL)
+6. Clique em **➕ Salvar** — as cotações são buscadas automaticamente do Yahoo Finance
+7. Para editar ou excluir: use os campos abaixo de cada posição cadastrada
+
+> **Nota:** ativos da B3 (ações brasileiras) usam o sufixo `.SA` — ex: `PETR4.SA`. Criptos usam `-USD` — ex: `BTC-USD`. A busca já formata automaticamente.
 
 ## Deploy no Oracle Cloud VM
 
@@ -116,10 +149,14 @@ Sempre que houver mudanças no código:
 
 ```bash
 cd ~/github/financas
+git stash              # guarda alterações locais temporariamente
 git pull
-bash setup.sh          # reinstala dependências se necessário
+git stash drop         # descarta versão antiga (opcional)
+bash setup.sh          # instala dependências novas (ex: yfinance, anthropic)
 sudo systemctl restart financas
 ```
+
+> Se aparecer erro de dependência no app (ex: "pip install yfinance"), sempre rode `bash setup.sh` — ele garante que tudo do `requirements.txt` está instalado no `venv`.
 
 ---
 
