@@ -263,6 +263,103 @@ def calcular_alertas(gastos_atual_df: pd.DataFrame, mes_atual: str) -> dict:
 
 db.init_db()
 
+
+def gerar_dica_diaria() -> str | None:
+    """Gera (ou retorna do cache) uma dica financeira diária via IA."""
+    from datetime import date as _date
+    api_key = db.get_config("ia_api_key", "")
+    if not api_key:
+        return None
+
+    hoje = str(_date.today())
+    if db.get_config("dica_ia_data") == hoje:
+        return db.get_config("dica_ia_conteudo")
+
+    # Monta contexto resumido direto do banco
+    meses = db.get_meses_disponiveis()
+    linhas = []
+    if meses:
+        mes_rec = meses[0]
+        df_rec  = db.get_transacoes(mes_rec)
+        if not df_rec.empty:
+            entradas = df_rec[df_rec["valor"] > 0]["valor"].sum()
+            saidas   = df_rec[df_rec["valor"] < 0]["valor"].sum()
+            gastos_cat = (
+                df_rec[df_rec["valor"] < 0]
+                .groupby("categoria")["valor"].sum().abs()
+                .sort_values(ascending=False).head(5)
+            )
+            linhas += [
+                f"Mês recente: {mes_rec}",
+                f"Entradas: R$ {entradas:,.2f}",
+                f"Saídas: R$ {abs(saidas):,.2f}",
+                "Top categorias de gasto:",
+            ]
+            for cat, val in gastos_cat.items():
+                linhas.append(f"  - {cat}: R$ {val:,.2f}")
+
+    sal = db.get_config("salario_mensal")
+    if sal:
+        linhas.append(f"Salário mensal: R$ {float(sal):,.2f}")
+
+    inv = db.get_investimentos()
+    if inv:
+        tot_inv = sum(p["quantidade"] * p["preco_medio"] for p in inv)
+        linhas.append(f"Carteira de investimentos: {len(inv)} ativos, custo total ~${tot_inv:,.0f} USD")
+
+    contexto = "\n".join(linhas) if linhas else "Sem dados financeiros disponíveis."
+
+    prompt = (
+        "Com base nos dados financeiros abaixo, gere UMA dica financeira prática, "
+        "construtiva e personalizada em 1 a 2 frases curtas. "
+        "Seja direto e específico — nada genérico.\n\n"
+        f"{contexto}"
+    )
+
+    provedor = db.get_config("ia_provedor", "Groq (grátis — recomendado)")
+    try:
+        if "Groq" in provedor:
+            import groq as _groq
+            client = _groq.Groq(api_key=api_key)
+            resp = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=120,
+            )
+            dica = resp.choices[0].message.content.strip()
+        elif "Claude" in provedor:
+            import anthropic as _ant
+            client = _ant.Anthropic(api_key=api_key)
+            resp = client.messages.create(
+                model="claude-3-5-haiku-20241022",
+                max_tokens=120,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            dica = resp.content[0].text.strip()
+        elif "Gemini" in provedor:
+            import google.generativeai as genai
+            genai.configure(api_key=api_key)
+            model = genai.GenerativeModel("gemini-1.5-flash")
+            dica = model.generate_content(prompt).text.strip()
+        elif "OpenAI" in provedor:
+            from openai import OpenAI as _OAI
+            client = _OAI(api_key=api_key)
+            resp = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=120,
+            )
+            dica = resp.choices[0].message.content.strip()
+        else:
+            return None
+
+        db.set_config("dica_ia_data",     hoje)
+        db.set_config("dica_ia_conteudo", dica)
+        return dica
+    except Exception:
+        return None
+
+
 # ─────────────────── SIDEBAR ───────────────────
 
 with st.sidebar:
@@ -270,9 +367,9 @@ with st.sidebar:
     st.markdown("---")
 
     arquivo = st.file_uploader(
-        "Importar extrato Nubank",
+        "Importar extrato",
         type=["csv"],
-        help="Exporte o extrato em CSV no app do Nubank: Perfil → Extratos → CSV",
+        help="Extrato em CSV do seu banco (Nubank: Perfil → Extratos → CSV)",
     )
 
     if arquivo is not None:
@@ -294,8 +391,53 @@ with st.sidebar:
         st.warning("Nenhum dado ainda.\nFaça o upload de um extrato acima.")
         st.stop()
 
-    mes_sel = st.selectbox("Mês", meses, format_func=fmt_mes)
-    st.caption(f"Total de meses importados: **{len(meses)}**")
+    st.markdown("""
+    <style>
+    [data-testid="stSidebar"] [data-testid="column"]:last-child button {
+        background: transparent !important;
+        border: 1px solid rgba(230,30,73,0.4) !important;
+        color: #e61e49 !important;
+        border-radius: 8px !important;
+        font-size: 16px !important;
+        font-weight: 400 !important;
+        letter-spacing: 0 !important;
+        padding: 4px 0 !important;
+        width: 100% !important;
+        box-shadow: none !important;
+    }
+    [data-testid="stSidebar"] [data-testid="column"]:last-child button:hover {
+        background: rgba(230,30,73,0.12) !important;
+        border-color: #e61e49 !important;
+        opacity: 1 !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    _sc1, _sc2 = st.columns([5, 1])
+    mes_sel = _sc1.selectbox("Mês", meses, format_func=fmt_mes, label_visibility="collapsed")
+    if _sc2.button("×", help=f"Excluir extrato de {fmt_mes(mes_sel)}", key="btn_x_mes"):
+        st.session_state["_mes_para_excluir"] = mes_sel
+    st.caption(f"Extratos importados: **{len(meses)}**")
+
+    # ── Modal de confirmação ──
+    @st.dialog("🗑️ Excluir extrato")
+    def _modal_excluir(mes: str):
+        st.markdown(
+            f"Tem certeza que deseja excluir **todas as transações** de "
+            f"**{fmt_mes(mes)}**? Esta ação não pode ser desfeita."
+        )
+        st.markdown("")
+        col_ok, col_no = st.columns(2)
+        if col_ok.button("Excluir", type="primary", key="modal_ok"):
+            db.deletar_mes(mes)
+            del st.session_state["_mes_para_excluir"]
+            st.rerun()
+        if col_no.button("Cancelar", key="modal_no"):
+            del st.session_state["_mes_para_excluir"]
+            st.rerun()
+
+    if "_mes_para_excluir" in st.session_state:
+        _modal_excluir(st.session_state["_mes_para_excluir"])
 
     # ── Bloco de Notas ──
     st.markdown("---")
@@ -312,6 +454,42 @@ with st.sidebar:
     if st.button("💾 Salvar", key="btn_notas_sb"):
         db.set_config("notas_planejamento", notas_input_sb)
         st.success("Salvo!")
+
+    # ── Dica diária da IA ──
+    if db.get_config("ia_api_key"):
+        st.markdown("---")
+        dica_cache = db.get_config("dica_ia_conteudo")
+        dica_data  = db.get_config("dica_ia_data")
+        from datetime import date as _d
+        hoje_str = str(_d.today())
+
+        if dica_cache and dica_data == hoje_str:
+            dica_txt = dica_cache
+        else:
+            with st.spinner("💡 Gerando dica do dia..."):
+                dica_txt = gerar_dica_diaria()
+
+        if dica_txt:
+            st.markdown(
+                f"<div style='"
+                f"background:#16181a;"
+                f"border-left:3px solid #494fdf;"
+                f"border-radius:12px;"
+                f"padding:14px 16px;"
+                f"'>"
+                f"<div style='color:rgba(255,255,255,0.5);font-size:11px;font-weight:600;"
+                f"letter-spacing:.6px;text-transform:uppercase;margin-bottom:6px'>"
+                f"💡 Dica do dia</div>"
+                f"<div style='color:rgba(255,255,255,0.88);font-size:13px;line-height:1.5'>"
+                f"{dica_txt}</div>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+            _r1, _r2 = st.columns([3, 1])
+            _r2.caption(f"_{dica_data}_")
+            if _r1.button("🔄 Nova dica", key="btn_nova_dica"):
+                db.set_config("dica_ia_data", "")
+                st.rerun()
 
 # ─────────────────── DADOS DO MÊS ───────────────────
 
@@ -1133,14 +1311,25 @@ with tab_invest:
     patrimonio_brl   = valor_atual_usd * usdbrl
 
     # ── Cards resumo ──
+    st.markdown("""
+    <style>
+    button[data-testid="stBaseButton-secondary"][kind="secondary"]:has(+ *),
+    div[data-testid="stMainBlockContainer"] [data-testid="stVerticalBlock"] > div:has(button[key="btn_open_lancamento"]) button {
+        background: rgba(255,255,255,0.08) !important;
+        border: 1px solid rgba(255,255,255,0.3) !important;
+        color: #ffffff !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
     if posicoes:
-        # Controles de moeda e período
-        ctrl1, ctrl2 = st.columns([2, 3])
+        # Controles de moeda, período e botão de lançamento
+        ctrl1, ctrl2, ctrl3 = st.columns([2, 3, 1.5])
         with ctrl1:
             moeda_sel = st.selectbox(
                 "Moeda",
                 list(MOEDAS.keys()),
-                index=0,  # BRL padrão
+                index=0,
                 key="inv_moeda",
                 label_visibility="collapsed",
             )
@@ -1148,11 +1337,14 @@ with tab_invest:
             periodo_sel = st.radio(
                 "Período",
                 list(PERIODOS_MAP.keys()),
-                index=1,  # 1A padrão
+                index=1,
                 horizontal=True,
                 key="inv_periodo",
                 label_visibility="collapsed",
             )
+        with ctrl3:
+            if st.button("＋ Adicionar Lançamento", key="btn_open_lancamento", use_container_width=True):
+                st.session_state["_modal_lancamento"] = True
 
         ticker_cambio, invert_cambio, simbolo = MOEDAS[moeda_sel]
         taxa_moeda = buscar_taxa_cambio(ticker_cambio, invert_cambio)
@@ -1410,21 +1602,18 @@ with tab_invest:
     else:
         st.info("Nenhuma posição cadastrada ainda. Adicione sua primeira abaixo.")
 
-    # ── Formulário de entrada ──
-    st.markdown("---")
-    with st.expander("➕ Adicionar / Gerenciar Posições", expanded=not posicoes):
-        st.markdown("**Nova posição**")
+    # ── Modal Adicionar / Gerenciar ──
+    @st.dialog("➕ Adicionar Lançamento", width="large")
+    def _modal_lancamento():
+        st.markdown("**Novo ativo**")
 
-        # ── Busca de ativo (search-as-you-type) ──
         busca_query = st.text_input(
             "Buscar ativo",
-            placeholder="Digite o nome ou ticker: Bitcoin, QQQ, Petrobras...",
+            placeholder="Bitcoin, QQQ, Petrobras...",
             key="inv_busca_query",
         )
-
         ticker_escolhido = ""
         nome_escolhido   = ""
-
         if len(busca_query) >= 2:
             resultados = pesquisar_ativos(busca_query)
             if resultados:
@@ -1443,22 +1632,20 @@ with tab_invest:
                 nome_escolhido   = resultados[escolha_idx]["name"]
                 st.caption(f"Ticker selecionado: **{ticker_escolhido}**")
             else:
-                st.caption("Nenhum resultado encontrado. Tente outro termo.")
+                st.caption("Nenhum resultado encontrado.")
 
-        # ── Linha 2: tipo + quantidade + preço médio + moeda entrada + salvar ──
         f1, f2, f3, f4, f5 = st.columns([2, 2, 1, 2, 1])
         with f1:
             novo_tipo = st.selectbox("Tipo", TIPOS_ATIVO, key="inv_tipo")
         with f2:
             nova_qtd = st.number_input("Quantidade", min_value=0.0, step=0.00000001, format="%.8f", key="inv_qtd")
         with f3:
-            moeda_pm = st.radio("Moeda do preço", ["USD", "BRL"], key="inv_pm_moeda",
+            moeda_pm = st.radio("Moeda", ["USD", "BRL"], key="inv_pm_moeda",
                                 label_visibility="collapsed", horizontal=False)
         with f4:
             taxa_atual  = buscar_usdbrl()
-            label_pm    = f"P. Médio ({moeda_pm})"
-            hint_pm     = f"Ex: 627623.04 (sem ponto de milhar)" if moeda_pm == "BRL" else "Valor em dólares"
-            novo_pm_raw = st.number_input(label_pm, min_value=0.0, step=0.01,
+            hint_pm     = "Ex: 627623.04 (sem ponto de milhar)" if moeda_pm == "BRL" else "Valor em dólares"
+            novo_pm_raw = st.number_input(f"P. Médio ({moeda_pm})", min_value=0.0, step=0.01,
                                           format="%.2f", key="inv_pm", help=hint_pm)
             novo_pm_usd = novo_pm_raw / taxa_atual if moeda_pm == "BRL" else novo_pm_raw
             if novo_pm_raw > 0 and nova_qtd > 0:
@@ -1467,12 +1654,12 @@ with tab_invest:
                 st.caption(f"Total ≈ {brl_n_str}")
         with f5:
             st.markdown("<br>", unsafe_allow_html=True)
-            if st.button("➕ Salvar", type="primary", key="inv_add"):
+            if st.button("Salvar", type="primary", key="inv_add"):
                 if ticker_escolhido and nova_qtd > 0 and novo_pm_usd > 0:
                     from datetime import date
                     db.salvar_investimento(ticker_escolhido, nova_qtd, novo_pm_usd, novo_tipo, str(date.today()))
-                    st.success(f"✅ {ticker_escolhido} — {nome_escolhido} adicionado!")
                     st.cache_data.clear()
+                    del st.session_state["_modal_lancamento"]
                     st.rerun()
                 elif not ticker_escolhido:
                     st.warning("Busque e selecione um ativo primeiro.")
@@ -1480,7 +1667,8 @@ with tab_invest:
                     st.warning("Preencha quantidade e preço médio.")
 
         if posicoes:
-            st.markdown("**Posições cadastradas**")
+            st.markdown("---")
+            st.markdown("**Gerenciar posições**")
             taxa_edit = buscar_usdbrl()
             for p in posicoes:
                 pc1, pc2, pc3, pc4, pc5, pc6 = st.columns([2.5, 2, 1, 2, 1, 1])
@@ -1509,6 +1697,9 @@ with tab_invest:
                     db.deletar_investimento(p["id"])
                     st.cache_data.clear()
                     st.rerun()
+
+    if st.session_state.get("_modal_lancamento"):
+        _modal_lancamento()
 
 # ═══════════════════════════════════════════
 #  TAB 5 — IA

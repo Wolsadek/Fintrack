@@ -55,12 +55,24 @@ Abre em: http://localhost:8501
 ## Como usar
 
 **Extratos**
-1. No app do Nubank: **Perfil → Extratos → seleciona o mês → exportar CSV**
-2. Na sidebar: clica em **"Importar extrato Nubank"** e sobe o arquivo
+1. Exporte o extrato do seu banco em CSV
+   - Nubank: **Perfil → Extratos → seleciona o mês → exportar CSV**
+2. Na sidebar: clica em **"Importar extrato"** e sobe o arquivo
 3. O app categoriza automaticamente e salva no banco local (`data/financas.db`)
 4. Para ajustar categorias erradas: aba **Transações** → edita na tabela → **Salvar alterações**
 5. Para criar regras automáticas: aba **Transações** → **⚙️ Regras de Categorização**
 6. Para categorizar "Outros" com IA: aba **Transações** → **🤖 Categorizar com IA**
+7. Para excluir um extrato importado por engano: sidebar → **🗑️ Excluir extrato**
+
+> **Bancos suportados atualmente:** Nubank. O formato esperado é o CSV padrão do Nubank (colunas `date`, `title`, `amount`). Suporte a outros bancos está planejado — veja abaixo.
+
+### Suporte a outros bancos (roadmap)
+
+O app foi pensado para ser universal. O plano de expansão:
+
+- **Curto prazo:** mapeamento manual de colunas para bancos como Inter, C6, Itaú
+- **Médio prazo:** detecção automática do formato ao importar — o app tenta identificar as colunas automaticamente
+- **Longo prazo:** se o formato for desconhecido e a API de IA estiver configurada, o assistente analisa o CSV e pergunta ao usuário quais colunas correspondem a data, valor e descrição — sem precisar codar nada
 
 **Carteira de Investimentos**
 1. Acesse a aba **💼 Investimentos**

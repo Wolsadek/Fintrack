@@ -116,6 +116,16 @@ def get_meses_disponiveis() -> list[str]:
     return meses
 
 
+def deletar_mes(mes_ano: str):
+    """Remove todas as transações de um mês (formato 'YYYY-MM')."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "DELETE FROM transacoes WHERE strftime('%Y-%m', data) = ?", (mes_ano,)
+    )
+    conn.commit()
+    conn.close()
+
+
 def update_categoria(id_: int, categoria: str):
     conn = sqlite3.connect(DB_PATH)
     conn.execute(
