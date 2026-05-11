@@ -273,12 +273,19 @@ def salvar_investimento(ticker: str, quantidade: float, preco_medio: float,
     conn.close()
 
 
-def update_investimento(id_: int, quantidade: float, preco_medio: float):
+def update_investimento(id_: int, quantidade: float, preco_medio: float,
+                        data_entrada: str | None = None):
     conn = sqlite3.connect(DB_PATH)
-    conn.execute(
-        "UPDATE investimentos SET quantidade = ?, preco_medio = ? WHERE id = ?",
-        (quantidade, preco_medio, id_),
-    )
+    if data_entrada:
+        conn.execute(
+            "UPDATE investimentos SET quantidade = ?, preco_medio = ?, data_entrada = ? WHERE id = ?",
+            (quantidade, preco_medio, data_entrada, id_),
+        )
+    else:
+        conn.execute(
+            "UPDATE investimentos SET quantidade = ?, preco_medio = ? WHERE id = ?",
+            (quantidade, preco_medio, id_),
+        )
     conn.commit()
     conn.close()
 

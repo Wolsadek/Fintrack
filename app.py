@@ -1169,65 +1169,51 @@ def buscar_taxa_cambio(ticker: str | None, invert: bool) -> float:
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def buscar_historico_portfolio(positions: tuple, periodo: str) -> pd.DataFrame:
+def buscar_historico_portfolio(tickers_qtds: tuple, periodo: str) -> pd.DataFrame:
     """
     Histórico do portfolio em USD.
-    positions: tuple de (ticker, quantidade, data_entrada_str)
-    Só inclui cada ativo a partir da data em que foi cadastrado.
+    tickers_qtds: tuple de (ticker, quantidade, data_entrada_str)
+    Cada ativo só é somado a partir da sua data de entrada.
     """
     try:
         import yfinance as yf
         from datetime import date as _date, datetime as _dt
 
-        if not positions:
+        if not tickers_qtds:
             return pd.DataFrame()
 
-        tickers = list({p[0] for p in positions})
-
-        # Download de todos os tickers de uma vez (mais robusto que individual)
-        raw = yf.download(tickers, period=periodo, auto_adjust=True, progress=False)
-        if raw.empty:
-            return pd.DataFrame()
-
-        # Close funciona para 1 ou N tickers
-        if isinstance(raw.columns, pd.MultiIndex):
-            close = raw["Close"].copy()
-        else:
-            close = raw[["Close"]].copy()
-            close.columns = tickers
-
-        # Remove timezone
-        if close.index.tz is not None:
-            close.index = close.index.tz_convert(None)
-        close.index = pd.to_datetime([d.date() for d in close.index])
-
-        # Corta em hoje (sem datas futuras)
         today_ts = pd.Timestamp(_date.today())
-        close    = close[close.index <= today_ts]
+        series_list = []
 
-        # Preenche fins de semana e feriados (forward fill por coluna)
-        close = close.ffill()
-
-        # Soma ponderada pelas quantidades, respeitando data_entrada de cada ativo
-        portfolio = pd.Series(0.0, index=close.index, dtype=float)
-        for ticker, qtd, data_entrada_str in positions:
-            if ticker not in close.columns:
+        for ticker, qtd, data_entrada_str in tickers_qtds:
+            hist = yf.Ticker(ticker).history(period=periodo)["Close"]
+            if hist.empty:
                 continue
-            try:
-                entry = pd.Timestamp(_dt.strptime(str(data_entrada_str)[:10], "%Y-%m-%d"))
-            except Exception:
-                entry = close.index[0]
-            serie = close[ticker].fillna(0.0) * qtd
-            # Antes da data de entrada o ativo não existia na carteira
-            serie[serie.index < entry] = 0.0
-            portfolio = portfolio.add(serie)
+            if hist.index.tz is not None:
+                hist.index = hist.index.tz_convert(None)
+            hist.index = pd.to_datetime([d.date() for d in hist.index])
+            hist = hist[hist.index <= today_ts]
 
-        # Remove datas onde nenhum ativo estava cadastrado
-        portfolio = portfolio[portfolio > 0]
-        if portfolio.empty:
+            # Filtra a partir da data de entrada do ativo
+            try:
+                entry_ts = pd.Timestamp(_dt.strptime(str(data_entrada_str)[:10], "%Y-%m-%d"))
+                hist = hist[hist.index >= entry_ts]
+            except Exception:
+                pass  # sem data_entrada: usa o histórico completo
+
+            if not hist.empty:
+                series_list.append(hist * qtd)
+
+        if not series_list:
             return pd.DataFrame()
 
-        df = portfolio.reset_index()
+        combined = pd.concat(series_list, axis=1).ffill()
+        total    = combined.sum(axis=1).dropna()
+        total    = total[total > 0]
+        if total.empty:
+            return pd.DataFrame()
+
+        df = total.reset_index()
         df.columns = ["data", "valor"]
         return df
     except Exception:
@@ -1446,12 +1432,12 @@ with tab_invest:
         col_g1, col_g2 = st.columns([3, 2])
 
         with col_g1:
-            posicoes_key = tuple(
+            tickers_qtds_key = tuple(
                 (p["ticker"], p["quantidade"], str(p.get("data_entrada", "")))
                 for p in posicoes
             )
-            periodo_yf   = PERIODOS_MAP[periodo_sel]
-            df_evolucao  = buscar_historico_portfolio(posicoes_key, periodo_yf)
+            periodo_yf  = PERIODOS_MAP[periodo_sel]
+            df_evolucao = buscar_historico_portfolio(tickers_qtds_key, periodo_yf)
 
             if not df_evolucao.empty:
                 df_evolucao["valor_conv"] = df_evolucao["valor"] * taxa_moeda
@@ -1478,6 +1464,9 @@ with tab_invest:
                 y_base = y_min * 0.88
                 y_top  = y_max * 1.06
 
+                # Largura fixa: ~20 dias em ms — barra consistente com 1 ou 12 meses
+                _BAR_W = 20 * 24 * 3600 * 1000
+
                 fig_vela = go.Figure()
 
                 # Barras do patrimônio com hover completo
@@ -1485,6 +1474,7 @@ with tab_invest:
                     x=df_ohlc["data"],
                     y=df_ohlc["close"] - y_base,
                     base=y_base,
+                    width=_BAR_W,
                     name="Patrimônio",
                     marker=dict(color="#494fdf", cornerradius=6, line_width=0),
                     customdata=df_ohlc[["close", "investido", "ganho", "retorno"]].values,
@@ -1503,6 +1493,7 @@ with tab_invest:
                 fig_vela.add_trace(go.Bar(
                     x=df_ohlc["data"],
                     y=df_ohlc["ret_loss"],
+                    width=_BAR_W,
                     name="Perda",
                     marker=dict(color="rgba(73,79,223,0.35)", cornerradius=4, line_width=0),
                     opacity=0.9,
@@ -1650,22 +1641,40 @@ with tab_invest:
         st.info("Nenhuma posição cadastrada ainda. Adicione sua primeira abaixo.")
 
     # ── Modal Adicionar / Gerenciar ──
-    @st.dialog("➕ Adicionar Lançamento", width="large")
+    @st.dialog("Adicionar Lançamento", width="large")
     def _modal_lancamento():
-        st.markdown("**Novo ativo**")
+        from datetime import date as _date_cls
 
-        busca_query = st.text_input(
-            "Buscar ativo",
-            placeholder="Bitcoin, QQQ, Petrobras...",
-            key="inv_busca_query",
+        taxa_modal = buscar_usdbrl()
+
+        # ── Tabs Compra / Venda ──
+        operacao = st.radio(
+            "Operação",
+            ["🔄  Compra", "💸  Venda"],
+            horizontal=True,
+            key="inv_op",
+            label_visibility="collapsed",
         )
+        st.markdown("<hr style='margin:8px 0 16px;border-color:rgba(255,255,255,0.1)'>",
+                    unsafe_allow_html=True)
+
+        # ── Linha 1: Tipo de ativo | Ativo ──
+        c1, c2 = st.columns(2)
+        with c1:
+            novo_tipo = st.selectbox("Tipo de ativo", TIPOS_ATIVO, key="inv_tipo")
+        with c2:
+            busca_query = st.text_input(
+                "Ativo",
+                placeholder="Bitcoin, QQQ, Petrobras…",
+                key="inv_busca_query",
+            )
+
         ticker_escolhido = ""
-        nome_escolhido   = ""
         if len(busca_query) >= 2:
             resultados = pesquisar_ativos(busca_query)
             if resultados:
                 opcoes_labels = [
-                    f"{r['symbol']}  —  {r['name']}  ({r['exchange']})"
+                    f"{r['symbol']}  —  {r['name']}"
                     for r in resultados
                 ]
                 escolha_idx = st.selectbox(
@@ -1676,74 +1685,143 @@ with tab_invest:
                     label_visibility="collapsed",
                 )
                 ticker_escolhido = resultados[escolha_idx]["symbol"]
-                nome_escolhido   = resultados[escolha_idx]["name"]
-                st.caption(f"Ticker selecionado: **{ticker_escolhido}**")
             else:
-                st.caption("Nenhum resultado encontrado.")
+                st.caption("Nenhum resultado.")
 
-        f1, f2, f3, f4, f5 = st.columns([2, 2, 1, 2, 1])
-        with f1:
-            novo_tipo = st.selectbox("Tipo", TIPOS_ATIVO, key="inv_tipo")
-        with f2:
-            nova_qtd = st.number_input("Quantidade", min_value=0.0, step=0.00000001, format="%.8f", key="inv_qtd")
-        with f3:
-            moeda_pm = st.radio("Moeda", ["USD", "BRL"], key="inv_pm_moeda",
-                                label_visibility="collapsed", horizontal=False)
-        with f4:
-            taxa_atual  = buscar_usdbrl()
-            hint_pm     = "Ex: 627623.04 (sem ponto de milhar)" if moeda_pm == "BRL" else "Valor em dólares"
-            novo_pm_raw = st.number_input(f"P. Médio ({moeda_pm})", min_value=0.0, step=0.01,
-                                          format="%.2f", key="inv_pm", help=hint_pm)
-            novo_pm_usd = novo_pm_raw / taxa_atual if moeda_pm == "BRL" else novo_pm_raw
-            if novo_pm_raw > 0 and nova_qtd > 0:
-                custo_brl_n = novo_pm_usd * nova_qtd * taxa_atual
-                brl_n_str   = f"R$ {custo_brl_n:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-                st.caption(f"Total ≈ {brl_n_str}")
-        with f5:
-            st.markdown("<br>", unsafe_allow_html=True)
-            if st.button("Salvar", type="primary", key="inv_add"):
-                if ticker_escolhido and nova_qtd > 0 and novo_pm_usd > 0:
-                    from datetime import date
-                    db.salvar_investimento(ticker_escolhido, nova_qtd, novo_pm_usd, novo_tipo, str(date.today()))
+        # ── Linha 2: Data de compra | Quantidade ──
+        c3, c4 = st.columns(2)
+        with c3:
+            nova_data = st.date_input(
+                "Data da compra",
+                value=_date_cls.today(),
+                format="DD/MM/YYYY",
+                key="inv_data",
+            )
+        with c4:
+            nova_qtd = st.number_input(
+                "Quantidade",
+                min_value=0.0, step=0.00000001, format="%.8f",
+                key="inv_qtd",
+            )
+
+        # ── Linha 3: Preço | Outros custos ──
+        c5, c6 = st.columns(2)
+        with c5:
+            moeda_pm    = st.radio("Moeda do preço", ["USD", "BRL"],
+                                   horizontal=True, key="inv_pm_moeda")
+            hint_pm     = "Ex: 627623.04 (sem ponto de milhar)" if moeda_pm == "BRL" else "Ex: 128349.00"
+            novo_pm_raw = st.number_input(
+                f"Preço em {moeda_pm}",
+                min_value=0.0, step=0.01, format="%.2f",
+                key="inv_pm", help=hint_pm,
+            )
+            novo_pm_usd = novo_pm_raw / taxa_modal if moeda_pm == "BRL" else novo_pm_raw
+        with c6:
+            outros_custos_raw = st.number_input(
+                "Outros custos (USD)", min_value=0.0, step=0.01, format="%.2f",
+                key="inv_outros", help="Taxas de corretagem, câmbio, etc.",
+                label_visibility="visible",
+            )
+            st.caption("Opcional — será somado ao custo total")
+
+        # ── Valor total ──
+        custo_usd   = nova_qtd * novo_pm_usd + outros_custos_raw
+        custo_brl   = custo_usd * taxa_modal
+        brl_fmt     = f"R$ {custo_brl:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        st.markdown(
+            f"<div style='background:rgba(73,79,223,0.12);border:1px solid rgba(73,79,223,0.35);"
+            f"border-radius:12px;padding:14px 20px;margin:16px 0 8px;"
+            f"display:flex;justify-content:space-between;align-items:center'>"
+            f"<span style='color:rgba(255,255,255,0.6);font-size:13px;font-weight:600;"
+            f"letter-spacing:.5px;text-transform:uppercase'>Valor total</span>"
+            f"<span style='font-size:20px;font-weight:700;color:white'>"
+            f"US$ {custo_usd:,.2f} &nbsp;<small style='font-size:13px;color:rgba(255,255,255,0.5)'>"
+            f"≈ {brl_fmt}</small></span></div>",
+            unsafe_allow_html=True,
+        )
+
+        # ── Botões ──
+        bc1, bc2 = st.columns([1, 2])
+        with bc1:
+            if st.button("Cancelar", use_container_width=True, key="inv_cancel"):
+                del st.session_state["_modal_lancamento"]
+                st.rerun()
+        with bc2:
+            lbl_btn = "➕  Adicionar Lançamento" if "Compra" in operacao else "➖  Registrar Venda"
+            if st.button(lbl_btn, type="primary", use_container_width=True, key="inv_add"):
+                if not ticker_escolhido:
+                    st.warning("Busque e selecione um ativo.")
+                elif nova_qtd <= 0:
+                    st.warning("Informe a quantidade.")
+                elif novo_pm_usd <= 0:
+                    st.warning("Informe o preço.")
+                else:
+                    data_str = str(nova_data)
+                    if "Compra" in operacao:
+                        db.salvar_investimento(
+                            ticker_escolhido, nova_qtd,
+                            novo_pm_usd + (outros_custos_raw / nova_qtd if nova_qtd else 0),
+                            novo_tipo, data_str,
+                        )
+                    else:
+                        # Venda: registra como quantidade negativa (reduz posição)
+                        db.salvar_investimento(
+                            ticker_escolhido, -nova_qtd, novo_pm_usd, novo_tipo, data_str,
+                        )
                     st.cache_data.clear()
                     del st.session_state["_modal_lancamento"]
                     st.rerun()
-                elif not ticker_escolhido:
-                    st.warning("Busque e selecione um ativo primeiro.")
-                else:
-                    st.warning("Preencha quantidade e preço médio.")
 
+        # ── Gerenciar posições existentes ──
         if posicoes:
-            st.markdown("---")
-            st.markdown("**Gerenciar posições**")
-            taxa_edit = buscar_usdbrl()
+            st.markdown(
+                "<hr style='margin:20px 0 12px;border-color:rgba(255,255,255,0.1)'>"
+                "<p style='color:rgba(255,255,255,0.5);font-size:12px;font-weight:600;"
+                "letter-spacing:.5px;text-transform:uppercase;margin-bottom:12px'>"
+                "Posições cadastradas</p>",
+                unsafe_allow_html=True,
+            )
             for p in posicoes:
-                pc1, pc2, pc3, pc4, pc5, pc6 = st.columns([2.5, 2, 1, 2, 1, 1])
-                pc1.write(f"**{p['ticker']}** — {p['tipo']}")
-                new_qtd = pc2.number_input("Qtd", value=p["quantidade"], step=0.00000001,
-                                           format="%.8f", key=f"eq_{p['id']}", label_visibility="collapsed")
-                moeda_edit = pc3.radio("M", ["USD", "BRL"], key=f"em_{p['id']}",
-                                       label_visibility="collapsed")
-                pm_display = p["preco_medio"] if moeda_edit == "USD" else p["preco_medio"] * taxa_edit
-                new_pm_raw = pc4.number_input(
-                    f"P. Médio ({moeda_edit})",
-                    value=round(pm_display, 2), step=0.01, format="%.2f",
-                    key=f"ep_{p['id']}_{moeda_edit}",
-                    label_visibility="collapsed",
-                )
-                new_pm_usd = new_pm_raw / taxa_edit if moeda_edit == "BRL" else new_pm_raw
-                if new_pm_raw > 0:
-                    custo_brl_e = new_pm_usd * new_qtd * taxa_edit
-                    brl_str = f"R$ {custo_brl_e:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-                    pc4.caption(f"Total ≈ {brl_str}")
-                if pc5.button("💾", key=f"eu_{p['id']}", help="Salvar"):
-                    db.update_investimento(p["id"], new_qtd, new_pm_usd)
-                    st.cache_data.clear()
-                    st.rerun()
-                if pc6.button("🗑️", key=f"ed_{p['id']}", help="Excluir"):
-                    db.deletar_investimento(p["id"])
-                    st.cache_data.clear()
-                    st.rerun()
+                with st.expander(f"**{p['ticker']}** — {p['tipo']}", expanded=False):
+                    ep1, ep2 = st.columns(2)
+                    with ep1:
+                        new_qtd = st.number_input(
+                            "Quantidade", value=p["quantidade"],
+                            step=0.00000001, format="%.8f", key=f"eq_{p['id']}",
+                        )
+                        try:
+                            from datetime import datetime as _dtt
+                            existing_date = _dtt.strptime(str(p["data_entrada"])[:10], "%Y-%m-%d").date()
+                        except Exception:
+                            existing_date = _date_cls.today()
+                        new_data = st.date_input(
+                            "Data de entrada", value=existing_date,
+                            format="DD/MM/YYYY", key=f"edt_{p['id']}",
+                        )
+                    with ep2:
+                        moeda_e    = st.radio("Moeda", ["USD", "BRL"],
+                                              horizontal=True, key=f"em_{p['id']}")
+                        pm_display = p["preco_medio"] if moeda_e == "USD" else p["preco_medio"] * taxa_modal
+                        new_pm_raw = st.number_input(
+                            f"Preço médio ({moeda_e})",
+                            value=round(pm_display, 2), step=0.01, format="%.2f",
+                            key=f"ep_{p['id']}_{moeda_e}",
+                        )
+                        new_pm_usd = new_pm_raw / taxa_modal if moeda_e == "BRL" else new_pm_raw
+                        if new_pm_raw > 0 and new_qtd > 0:
+                            custo_e   = new_pm_usd * new_qtd * taxa_modal
+                            brl_e_fmt = f"R$ {custo_e:,.2f}".replace(",","X").replace(".",",").replace("X",".")
+                            st.caption(f"Total ≈ {brl_e_fmt}")
+
+                    ea, eb = st.columns(2)
+                    if ea.button("💾 Salvar", key=f"eu_{p['id']}", use_container_width=True):
+                        db.update_investimento(p["id"], new_qtd, new_pm_usd, str(new_data))
+                        st.cache_data.clear()
+                        st.rerun()
+                    if eb.button("🗑️ Excluir", key=f"ed_{p['id']}", use_container_width=True):
+                        db.deletar_investimento(p["id"])
+                        st.cache_data.clear()
+                        st.rerun()
 
     if st.session_state.get("_modal_lancamento"):
         _modal_lancamento()
