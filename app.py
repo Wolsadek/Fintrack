@@ -1169,6 +1169,7 @@ def buscar_taxa_cambio(ticker: str | None, invert: bool) -> float:
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def buscar_historico_portfolio(tickers_qtds: tuple, periodo: str) -> pd.DataFrame:
     """Histórico do portfolio em USD para o período dado."""
     try:
@@ -1176,12 +1177,23 @@ def buscar_historico_portfolio(tickers_qtds: tuple, periodo: str) -> pd.DataFram
         dfs = []
         for ticker, qtd in tickers_qtds:
             hist = yf.Ticker(ticker).history(period=periodo)["Close"]
-            dfs.append(hist * qtd)
+            if not hist.empty:
+                dfs.append(hist * qtd)
         if not dfs:
             return pd.DataFrame()
-        total = pd.concat(dfs, axis=1).sum(axis=1).dropna()
-        total.index = total.index.tz_localize(None)
-        return total.reset_index().rename(columns={0: "valor", "Date": "data"})
+        combined = pd.concat(dfs, axis=1)
+        combined = combined.ffill()          # preenche fins de semana/feriados
+        total    = combined.sum(axis=1)
+        # Remove timezone sem erros independente da versão do yfinance
+        try:
+            total.index = total.index.tz_localize(None)
+        except TypeError:
+            total.index = total.index.tz_convert(None)
+        # Normaliza para só data (evita artefatos de timezone)
+        total.index = pd.to_datetime([d.date() for d in total.index])
+        df = total.reset_index()
+        df.columns = ["data", "valor"]      # renomeia independente do nome original
+        return df
     except Exception:
         return pd.DataFrame()
 
@@ -1332,7 +1344,7 @@ with tab_invest:
             periodo_sel = st.radio(
                 "Período",
                 list(PERIODOS_MAP.keys()),
-                index=1,
+                index=0,  # 6M padrão
                 horizontal=True,
                 key="inv_periodo",
                 label_visibility="collapsed",
@@ -1413,41 +1425,42 @@ with tab_invest:
                     .dropna()
                     .reset_index()
                 )
-                df_ohlc["retorno"]     = df_ohlc["close"] - df_ohlc["open"]
-                df_ohlc["cor_retorno"] = df_ohlc["retorno"].apply(
-                    lambda v: "#00a87e" if v >= 0 else "#e61e49"
-                )
-
-                # Só mostra barrinha de retorno quando houver perda (mês negativo)
+                df_ohlc["retorno"]  = df_ohlc["close"] - df_ohlc["open"]
                 df_ohlc["ret_loss"] = df_ohlc["retorno"].apply(lambda v: v if v < 0 else 0)
 
-                # Zoom no eixo Y para realçar as diferenças
-                y_min = df_ohlc["close"].min()
-                y_max = df_ohlc["close"].max()
-                y_pad = (y_max - y_min) * 0.15 or y_max * 0.1
+                # Dados para hover unificado
+                total_investido_conv = total_investido_usd * taxa_moeda
+                df_ohlc["investido"] = total_investido_conv
+                df_ohlc["ganho"]     = df_ohlc["close"] - total_investido_conv
+
+                # Y-axis moderado: barras parecidas, pequenas variações visíveis
+                y_min  = df_ohlc["close"].min()
+                y_max  = df_ohlc["close"].max()
+                y_base = y_min * 0.88
+                y_top  = y_max * 1.06
 
                 fig_vela = go.Figure()
 
-                # Retângulos — todos partindo da base (y_min - pad), sem flutuar
+                # Barras do patrimônio com hover completo
                 fig_vela.add_trace(go.Bar(
                     x=df_ohlc["data"],
-                    y=df_ohlc["close"] - (y_min - y_pad),
-                    base=y_min - y_pad,
+                    y=df_ohlc["close"] - y_base,
+                    base=y_base,
                     name="Patrimônio",
-                    marker=dict(
-                        color="#494fdf",
-                        cornerradius=6,
-                        line_width=0,
-                    ),
+                    marker=dict(color="#494fdf", cornerradius=6, line_width=0),
+                    customdata=df_ohlc[["close", "investido", "ganho", "retorno"]].values,
                     hovertemplate=(
-                        f"%{{x|%b %Y}}<br>"
-                        f"Valor: {simbolo}%{{customdata:,.2f}}<extra></extra>"
+                        "<b>%{x|%b %Y}</b><br>"
+                        f"Patrimônio: {simbolo}%{{customdata[0]:,.2f}}<br>"
+                        f"Investido: {simbolo}%{{customdata[1]:,.2f}}<br>"
+                        f"Ganho/Perda: {simbolo}%{{customdata[2]:+,.2f}}<br>"
+                        f"Var. mês: {simbolo}%{{customdata[3]:+,.2f}}"
+                        "<extra></extra>"
                     ),
-                    customdata=df_ohlc["close"],
                     yaxis="y",
                 ))
 
-                # Barrinha de perda mensal (só aparece quando negativo)
+                # Barrinha de perda mensal
                 fig_vela.add_trace(go.Bar(
                     x=df_ohlc["data"],
                     y=df_ohlc["ret_loss"],
@@ -1455,7 +1468,7 @@ with tab_invest:
                     marker=dict(color="rgba(73,79,223,0.35)", cornerradius=4, line_width=0),
                     opacity=0.9,
                     yaxis="y2",
-                    hovertemplate=f"%{{x|%b %Y}}<br>{simbolo}%{{y:,.2f}}<extra></extra>",
+                    hoverinfo="skip",
                 ))
 
                 fig_vela.update_layout(
@@ -1472,8 +1485,8 @@ with tab_invest:
                     yaxis=dict(
                         title=nome_cambio,
                         gridcolor="rgba(255,255,255,0.08)",
-                        domain=[0.30, 1.0],
-                        range=[y_min - y_pad, y_max + y_pad],
+                        domain=[0.28, 1.0],
+                        range=[y_base, y_top],
                     ),
                     yaxis2=dict(
                         title="Retorno",
