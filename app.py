@@ -310,10 +310,15 @@ def gerar_dica_diaria() -> str | None:
     contexto = "\n".join(linhas) if linhas else "Sem dados financeiros disponíveis."
 
     prompt = (
-        "Com base nos dados financeiros abaixo, gere UMA dica financeira prática, "
-        "construtiva e personalizada em 1 a 2 frases curtas. "
-        "Seja direto e específico — nada genérico.\n\n"
-        f"{contexto}"
+        "Você é um consultor financeiro experiente. "
+        "Gere UMA dica curta (máximo 1 frase) sobre finanças pessoais ou investimentos "
+        "que seja pouco óbvia — algo que a maioria das pessoas não sabe ou não considera. "
+        "Pode ser sobre comportamento, psicologia do dinheiro, estratégia de investimento, "
+        "inflação, câmbio, diversificação, juros compostos, etc. "
+        "Use os dados do usuário abaixo apenas como contexto para tornar a dica mais relevante, "
+        "mas NÃO repita os números de volta — o usuário já os conhece. "
+        "Responda apenas a dica, sem introdução, sem 'Dica:', sem aspas.\n\n"
+        f"Contexto do usuário:\n{contexto}"
     )
 
     provedor = db.get_config("ia_provedor", "Groq (grátis — recomendado)")
@@ -471,23 +476,15 @@ with st.sidebar:
 
         if dica_txt:
             st.markdown(
-                f"<div style='"
-                f"background:#16181a;"
-                f"border-left:3px solid #494fdf;"
-                f"border-radius:12px;"
-                f"padding:14px 16px;"
-                f"'>"
-                f"<div style='color:rgba(255,255,255,0.5);font-size:11px;font-weight:600;"
-                f"letter-spacing:.6px;text-transform:uppercase;margin-bottom:6px'>"
-                f"💡 Dica do dia</div>"
-                f"<div style='color:rgba(255,255,255,0.88);font-size:13px;line-height:1.5'>"
-                f"{dica_txt}</div>"
-                f"</div>",
+                f"<div style='border-left:2px solid rgba(73,79,223,0.6);"
+                f"padding:8px 12px;margin-top:4px'>"
+                f"<span style='color:rgba(255,255,255,0.4);font-size:10px;"
+                f"letter-spacing:.5px;text-transform:uppercase'>💡 dica</span><br>"
+                f"<span style='color:rgba(255,255,255,0.8);font-size:12px;line-height:1.45'>"
+                f"{dica_txt}</span></div>",
                 unsafe_allow_html=True,
             )
-            _r1, _r2 = st.columns([3, 1])
-            _r2.caption(f"_{dica_data}_")
-            if _r1.button("🔄 Nova dica", key="btn_nova_dica"):
+            if st.button("↺ nova dica", key="btn_nova_dica"):
                 db.set_config("dica_ia_data", "")
                 st.rerun()
 
@@ -741,11 +738,18 @@ with tab_resumo:
 with tab_transacoes:
     st.markdown("### Transações")
 
-    col_busca, col_cat_filter = st.columns([2, 1])
+    # ── Barra superior: busca + filtro + botão IA ──
+    col_busca, col_cat_filter, col_ia_btn = st.columns([2, 1.5, 1])
     with col_busca:
         busca = st.text_input("🔍 Buscar na descrição", placeholder="Ex: Zaffari, Uber...")
     with col_cat_filter:
         cat_filtro = st.multiselect("Filtrar por categoria", options=CATEGORIAS_LISTA)
+    with col_ia_btn:
+        n_outros = len(df[df["categoria"] == "Outros"])
+        btn_label = f"🤖 IA  ({n_outros})" if n_outros else "🤖 IA"
+        if st.button(btn_label, key="btn_open_cat_ia", use_container_width=True,
+                     help="Categorizar transações 'Outros' com IA"):
+            st.session_state["_modal_cat_ia"] = True
 
     df_exibir = df.copy()
     if busca:
@@ -802,111 +806,100 @@ with tab_transacoes:
         mime="text/csv",
     )
 
-    # ── Categorização com IA ──
-    st.markdown("---")
-    with st.expander("🤖 Categorizar 'Outros' com IA"):
+    # ── Modal: Categorizar com IA ──
+    @st.dialog("🤖 Categorizar 'Outros' com IA", width="large")
+    def _modal_cat_ia():
         outros_df = df[df["categoria"] == "Outros"].copy()
         api_key_cat = db.get_config("ia_api_key", "")
 
         if outros_df.empty:
             st.success("Nenhuma transação em 'Outros' neste mês!")
-        elif not api_key_cat:
+            return
+        if not api_key_cat:
             st.warning("Configure a API Key na aba 🤖 IA para usar esta função.")
-        else:
-            st.caption(f"{len(outros_df)} transação(ões) em 'Outros' neste mês.")
+            return
 
-            if st.button("🔍 Analisar com IA", type="primary", key="btn_cat_ia"):
-                # Monta lista com frequência
-                freq = outros_df.groupby("descricao").agg(
-                    vezes=("valor", "count"),
-                    valor_medio=("valor", "mean")
-                ).reset_index()
+        st.caption(f"{len(outros_df)} transação(ões) em 'Outros' neste mês.")
 
-                lista_txt = "\n".join([
-                    f'- ID_DESC "{row.descricao}" | R${abs(row.valor_medio):.2f} | '
-                    f'{row.vezes}x no mês'
-                    for _, row in freq.iterrows()
-                ])
-
-                prompt_cat = f"""Analise estas transações brasileiras na categoria "Outros" e sugira a categoria mais provável para cada uma.
-
-Categorias disponíveis: Alimentação, Transporte, Saúde, Educação, Esporte, Assinaturas, Lazer, Outros
-
-Retorne SOMENTE um JSON válido, sem texto adicional, no formato:
-[{{"descricao": "...", "categoria": "...", "motivo": "..."}}]
-
-Transações:
-{lista_txt}"""
-
-                try:
-                    from groq import Groq
-                    import json
-                    client = Groq(api_key=api_key_cat)
-                    with st.spinner("Analisando transações..."):
-                        resp = client.chat.completions.create(
-                            model="llama-3.3-70b-versatile",
-                            messages=[{"role": "user", "content": prompt_cat}],
-                            max_tokens=1500,
-                            temperature=0.1,
-                        )
-                    raw = resp.choices[0].message.content.strip()
-                    # Extrai JSON mesmo se vier com texto em volta
-                    inicio = raw.find("[")
-                    fim    = raw.rfind("]") + 1
-                    sugestoes = json.loads(raw[inicio:fim])
-                    st.session_state["sugestoes_ia"] = sugestoes
-                except Exception as e:
-                    st.error(f"Erro: {e}")
-
-            if "sugestoes_ia" in st.session_state and st.session_state["sugestoes_ia"]:
-                sugestoes = st.session_state["sugestoes_ia"]
-                st.markdown("**Sugestões da IA — revise e aplique:**")
-
-                selecionadas = {}
-                for i, s in enumerate(sugestoes):
-                    desc  = s.get("descricao", "")
-                    cat   = s.get("categoria", "Outros")
-                    motivo = s.get("motivo", "")
-                    col_d, col_c, col_m, col_chk = st.columns([3, 2, 3, 1])
-                    col_d.markdown(f"`{desc[:45]}`")
-                    nova_cat_sug = col_c.selectbox(
-                        "", CATEGORIAS_LISTA,
-                        index=CATEGORIAS_LISTA.index(cat) if cat in CATEGORIAS_LISTA else 0,
-                        key=f"sug_{i}",
-                        label_visibility="collapsed",
+        if st.button("🔍 Analisar com IA", type="primary", key="btn_cat_ia"):
+            freq = outros_df.groupby("descricao").agg(
+                vezes=("valor", "count"),
+                valor_medio=("valor", "mean")
+            ).reset_index()
+            lista_txt = "\n".join([
+                f'- ID_DESC "{row.descricao}" | R${abs(row.valor_medio):.2f} | {row.vezes}x no mês'
+                for _, row in freq.iterrows()
+            ])
+            prompt_cat = (
+                'Analise estas transações brasileiras na categoria "Outros" e sugira a categoria '
+                "mais provável para cada uma.\n\n"
+                "Categorias disponíveis: Alimentação, Transporte, Saúde, Educação, Esporte, Assinaturas, Lazer, Outros\n\n"
+                'Retorne SOMENTE um JSON válido, sem texto adicional, no formato:\n'
+                '[{"descricao": "...", "categoria": "...", "motivo": "..."}]\n\n'
+                f"Transações:\n{lista_txt}"
+            )
+            try:
+                from groq import Groq
+                import json
+                client = Groq(api_key=api_key_cat)
+                with st.spinner("Analisando..."):
+                    resp = client.chat.completions.create(
+                        model="llama-3.3-70b-versatile",
+                        messages=[{"role": "user", "content": prompt_cat}],
+                        max_tokens=1500,
+                        temperature=0.1,
                     )
-                    col_m.caption(motivo)
-                    aplicar = col_chk.checkbox("", value=True, key=f"chk_{i}")
-                    if aplicar:
-                        selecionadas[desc] = nova_cat_sug
+                raw   = resp.choices[0].message.content.strip()
+                inicio = raw.find("[")
+                fim    = raw.rfind("]") + 1
+                st.session_state["sugestoes_ia"] = json.loads(raw[inicio:fim])
+            except Exception as e:
+                st.error(f"Erro: {e}")
 
-                col_aplicar, col_regra = st.columns(2)
-                with col_aplicar:
-                    if st.button("✅ Aplicar selecionadas", type="primary"):
-                        atualizados = 0
-                        for desc, cat_nova in selecionadas.items():
-                            ids = df[df["descricao"] == desc]["id"].tolist()
-                            for id_ in ids:
-                                db.update_categoria(id_, cat_nova)
-                                atualizados += 1
-                        st.success(f"{atualizados} transação(ões) atualizadas!")
-                        del st.session_state["sugestoes_ia"]
-                        st.rerun()
-                with col_regra:
-                    if st.button("✅ Aplicar + salvar como regras"):
-                        atualizados = 0
-                        for desc, cat_nova in selecionadas.items():
-                            ids = df[df["descricao"] == desc]["id"].tolist()
-                            for id_ in ids:
-                                db.update_categoria(id_, cat_nova)
-                                atualizados += 1
-                            # Salva a palavra-chave mais curta identificável
-                            palavras = desc.lower().split(" - ")
-                            chave = palavras[-1].strip()[:30] if len(palavras) > 1 else desc.lower()[:30]
-                            db.salvar_regra(chave, cat_nova)
-                        st.success(f"{atualizados} transações atualizadas e regras salvas!")
-                        del st.session_state["sugestoes_ia"]
-                        st.rerun()
+        if "sugestoes_ia" in st.session_state and st.session_state["sugestoes_ia"]:
+            sugestoes = st.session_state["sugestoes_ia"]
+            st.markdown("**Sugestões — revise e aplique:**")
+            selecionadas = {}
+            for i, s in enumerate(sugestoes):
+                desc   = s.get("descricao", "")
+                cat    = s.get("categoria", "Outros")
+                motivo = s.get("motivo", "")
+                col_d, col_c, col_m, col_chk = st.columns([3, 2, 3, 1])
+                col_d.markdown(f"`{desc[:40]}`")
+                nova_cat_sug = col_c.selectbox(
+                    "", CATEGORIAS_LISTA,
+                    index=CATEGORIAS_LISTA.index(cat) if cat in CATEGORIAS_LISTA else 0,
+                    key=f"sug_{i}", label_visibility="collapsed",
+                )
+                col_m.caption(motivo)
+                if col_chk.checkbox("", value=True, key=f"chk_{i}"):
+                    selecionadas[desc] = nova_cat_sug
+
+            col_ap, col_reg = st.columns(2)
+            with col_ap:
+                if st.button("✅ Aplicar selecionadas", type="primary"):
+                    n = sum(1 for desc, cat_nova in selecionadas.items()
+                            for id_ in df[df["descricao"] == desc]["id"].tolist()
+                            if not db.update_categoria(id_, cat_nova) or True)
+                    st.success(f"{n} transações atualizadas!")
+                    del st.session_state["sugestoes_ia"]
+                    del st.session_state["_modal_cat_ia"]
+                    st.rerun()
+            with col_reg:
+                if st.button("✅ Aplicar + salvar como regras"):
+                    for desc, cat_nova in selecionadas.items():
+                        for id_ in df[df["descricao"] == desc]["id"].tolist():
+                            db.update_categoria(id_, cat_nova)
+                        palavras = desc.lower().split(" - ")
+                        chave = palavras[-1].strip()[:30] if len(palavras) > 1 else desc.lower()[:30]
+                        db.salvar_regra(chave, cat_nova)
+                    st.success("Aplicado e regras salvas!")
+                    del st.session_state["sugestoes_ia"]
+                    del st.session_state["_modal_cat_ia"]
+                    st.rerun()
+
+    if st.session_state.get("_modal_cat_ia"):
+        _modal_cat_ia()
 
     # ── Regras personalizadas ──
     st.markdown("---")
@@ -1561,7 +1554,7 @@ with tab_invest:
             else:
                 label_g = f"{emoji} {tipo}  ·  0 ativos  ·  {fmt_inv(0.0)}"
 
-            with st.expander(label_g, expanded=(n_ativos > 0)):
+            with st.expander(label_g, expanded=False):
                 if not ativos:
                     st.caption("Nenhum ativo cadastrado nesta categoria.")
                 else:
