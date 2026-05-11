@@ -1217,11 +1217,8 @@ with tab_invest:
                     lambda v: "#00a87e" if v >= 0 else "#e61e49"
                 )
 
-                # Cobalt para todos os meses — altura já mostra crescimento/queda
-                # Retorno abaixo: teal positivo, cobalt transparente negativo
-                df_ohlc["cor_ret"] = df_ohlc["retorno"].apply(
-                    lambda v: "#00a87e" if v >= 0 else "rgba(73,79,223,0.45)"
-                )
+                # Só mostra barrinha de retorno quando houver perda (mês negativo)
+                df_ohlc["ret_loss"] = df_ohlc["retorno"].apply(lambda v: v if v < 0 else 0)
 
                 # Zoom no eixo Y para realçar as diferenças
                 y_min = df_ohlc["close"].min()
@@ -1249,13 +1246,13 @@ with tab_invest:
                     yaxis="y",
                 ))
 
-                # Barras de retorno mensal abaixo
+                # Barrinha de perda mensal (só aparece quando negativo)
                 fig_vela.add_trace(go.Bar(
                     x=df_ohlc["data"],
-                    y=df_ohlc["retorno"],
-                    name="Retorno",
-                    marker=dict(color=df_ohlc["cor_ret"], cornerradius=4, line_width=0),
-                    opacity=0.85,
+                    y=df_ohlc["ret_loss"],
+                    name="Perda",
+                    marker=dict(color="rgba(73,79,223,0.35)", cornerradius=4, line_width=0),
+                    opacity=0.9,
                     yaxis="y2",
                     hovertemplate=f"%{{x|%b %Y}}<br>{simbolo}%{{y:,.2f}}<extra></extra>",
                 ))
