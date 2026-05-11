@@ -377,9 +377,23 @@ with tab_resumo:
         st.markdown("---")
         st.markdown("#### 🚨 Alertas")
         for cat, info in alertas.items():
-            st.warning(
-                f"**{cat}**: {fmt_brl(info['atual'])} gastos — "
-                f"**{info['pct_acima']:.0f}% acima** da sua média histórica ({fmt_brl(info['media'])})"
+            atual_str  = fmt_brl(info['atual']).replace("$", "&#36;")
+            media_str  = fmt_brl(info['media']).replace("$", "&#36;")
+            pct        = f"{info['pct_acima']:.0f}%"
+            st.markdown(
+                f"<div style='"
+                f"background:#16181a;"
+                f"border-left:3px solid #e61e49;"
+                f"border-radius:12px;"
+                f"padding:14px 18px;"
+                f"margin-bottom:8px;"
+                f"'>"
+                f"<span style='font-weight:700;color:#ffffff'>{cat}</span>"
+                f"<span style='color:rgba(255,255,255,0.55)'> &nbsp;·&nbsp; {atual_str} gastos</span>"
+                f"<span style='color:#e61e49;font-weight:600'> &nbsp;+{pct} acima</span>"
+                f"<span style='color:rgba(255,255,255,0.35);font-size:12px'> &nbsp;da média ({media_str})</span>"
+                f"</div>",
+                unsafe_allow_html=True,
             )
 
     st.markdown("---")
@@ -1311,42 +1325,87 @@ with tab_invest:
             )
             st.plotly_chart(fig_donut, use_container_width=True)
 
-        # ── Tabela de posições ──
-        st.markdown("#### Meus Ativos")
-        for row in sorted(rows_tabela, key=lambda r: -r["Valor (USD)"]):
-            var_cor  = "#00a87e" if row["Var %"] >= 0 else "#e61e49"
-            seta     = "▲" if row["Var %"] >= 0 else "▼"
-            # Preços de mercado sempre em USD (são cotações da bolsa americana)
-            preco_a_str = fmt_usd(row["P. Atual"]) if row["P. Atual"] else "—"
-            pct_cart    = (row["Valor (USD)"] / valor_atual_usd * 100) if valor_atual_usd > 0 else 0
+        # ── Tabela de posições agrupada por tipo ──
+        EMOJIS_TIPO = {
+            "ETF Internacional": "🌍",
+            "Stock (Ação EUA)":  "🇺🇸",
+            "Cripto":            "🪙",
+            "FII":               "🏢",
+            "Ação BR":           "🇧🇷",
+            "Renda Fixa":        "💵",
+            "Outro":             "📦",
+        }
 
-            with st.container():
-                c1, c2, c3, c4, c5, c6, c7 = st.columns([2, 2, 1.5, 1.5, 1.5, 2, 1])
-                info_ativo = buscar_info_ativo(row["Ticker"])
-                nome_ativo = info_ativo["nome"] if info_ativo["nome"] != row["Ticker"] else row["Tipo"]
-                c1.markdown(
-                    f"**{row['Ticker']}**  \n"
-                    f"<small style='color:rgba(255,255,255,0.5)'>{nome_ativo[:35]}</small>",
-                    unsafe_allow_html=True,
+        # Agrupar rows por tipo
+        from collections import defaultdict as _dd
+        _grupos: dict = _dd(list)
+        for _r in rows_tabela:
+            _grupos[_r["Tipo"]].append(_r)
+
+        n_total = len(rows_tabela)
+        st.markdown(f"#### Meus Ativos ({n_total})")
+
+        for tipo in TIPOS_ATIVO:
+            emoji   = EMOJIS_TIPO.get(tipo, "📦")
+            ativos  = _grupos.get(tipo, [])
+            n_ativos = len(ativos)
+
+            # Métricas do grupo
+            grp_valor = sum(r["Valor (USD)"] for r in ativos)
+            grp_custo = sum(r["Custo (USD)"] for r in ativos)
+            grp_lucro = grp_valor - grp_custo
+            grp_var   = (grp_lucro / grp_custo * 100) if grp_custo > 0 else 0.0
+            grp_pct   = (grp_valor / valor_atual_usd * 100) if valor_atual_usd > 0 else 0.0
+            seta_g    = "▲" if grp_var >= 0 else "▼"
+
+            if n_ativos > 0:
+                label_g = (
+                    f"{emoji} {tipo}  ·  "
+                    f"{n_ativos} ativo{'s' if n_ativos > 1 else ''}  ·  "
+                    f"{fmt_inv(grp_valor)}  ·  "
+                    f"{seta_g} {grp_var:+.2f}%  ·  "
+                    f"{grp_pct:.1f}% da carteira"
                 )
-                c2.markdown(f"<small style='color:rgba(255,255,255,0.5)'>Qtd</small>  \n{row['Qtd']:.8f}", unsafe_allow_html=True)
-                _pm_str    = fmt_usd(row['P. Médio']).replace("$", "&#36;")
-                _custo_str = fmt_inv(row['Custo (USD)']).replace("$", "&#36;")
-                c3.markdown(
-                    f"<small style='color:rgba(255,255,255,0.5)'>P. Médio (USD)</small><br>"
-                    f"<span style='white-space:nowrap'>{_pm_str}</span><br>"
-                    f"<small style='color:rgba(255,255,255,0.35)'>Custo: {_custo_str}</small>",
-                    unsafe_allow_html=True,
-                )
-                c4.markdown(f"<small style='color:rgba(255,255,255,0.5)'>P. Atual (USD)</small>  \n{preco_a_str}", unsafe_allow_html=True)
-                c5.markdown(f"<small style='color:rgba(255,255,255,0.5)'>Valor</small>  \n{fmt_inv(row['Valor (USD)'])}", unsafe_allow_html=True)
-                c6.markdown(
-                    f"<small style='color:rgba(255,255,255,0.5)'>Variação</small>  \n"
-                    f"<span style='color:{var_cor}'>{seta} {row['Var %']:+.2f}% &nbsp; {fmt_inv(row['Lucro (USD)'])}</span>",
-                    unsafe_allow_html=True,
-                )
-                c7.markdown(f"<small style='color:rgba(255,255,255,0.5)'>Carteira</small>  \n{pct_cart:.1f}%", unsafe_allow_html=True)
-            st.markdown("<hr style='margin:6px 0;border-color:rgba(255,255,255,0.06)'>", unsafe_allow_html=True)
+            else:
+                label_g = f"{emoji} {tipo}  ·  0 ativos  ·  {fmt_inv(0.0)}"
+
+            with st.expander(label_g, expanded=(n_ativos > 0)):
+                if not ativos:
+                    st.caption("Nenhum ativo cadastrado nesta categoria.")
+                else:
+                    for row in sorted(ativos, key=lambda r: -r["Valor (USD)"]):
+                        var_cor  = "#00a87e" if row["Var %"] >= 0 else "#e61e49"
+                        seta     = "▲" if row["Var %"] >= 0 else "▼"
+                        preco_a_str = fmt_usd(row["P. Atual"]) if row["P. Atual"] else "—"
+                        pct_cart    = (row["Valor (USD)"] / valor_atual_usd * 100) if valor_atual_usd > 0 else 0
+
+                        with st.container():
+                            c1, c2, c3, c4, c5, c6, c7 = st.columns([2, 2, 1.5, 1.5, 1.5, 2, 1])
+                            info_ativo = buscar_info_ativo(row["Ticker"])
+                            nome_ativo = info_ativo["nome"] if info_ativo["nome"] != row["Ticker"] else row["Tipo"]
+                            c1.markdown(
+                                f"**{row['Ticker']}**  \n"
+                                f"<small style='color:rgba(255,255,255,0.5)'>{nome_ativo[:35]}</small>",
+                                unsafe_allow_html=True,
+                            )
+                            c2.markdown(f"<small style='color:rgba(255,255,255,0.5)'>Qtd</small>  \n{row['Qtd']:.8f}", unsafe_allow_html=True)
+                            _pm_str    = fmt_usd(row['P. Médio']).replace("$", "&#36;")
+                            _custo_str = fmt_inv(row['Custo (USD)']).replace("$", "&#36;")
+                            c3.markdown(
+                                f"<small style='color:rgba(255,255,255,0.5)'>P. Médio (USD)</small><br>"
+                                f"<span style='white-space:nowrap'>{_pm_str}</span><br>"
+                                f"<small style='color:rgba(255,255,255,0.35)'>Custo: {_custo_str}</small>",
+                                unsafe_allow_html=True,
+                            )
+                            c4.markdown(f"<small style='color:rgba(255,255,255,0.5)'>P. Atual (USD)</small>  \n{preco_a_str}", unsafe_allow_html=True)
+                            c5.markdown(f"<small style='color:rgba(255,255,255,0.5)'>Valor</small>  \n{fmt_inv(row['Valor (USD)'])}", unsafe_allow_html=True)
+                            c6.markdown(
+                                f"<small style='color:rgba(255,255,255,0.5)'>Variação</small>  \n"
+                                f"<span style='color:{var_cor}'>{seta} {row['Var %']:+.2f}% &nbsp; {fmt_inv(row['Lucro (USD)'])}</span>",
+                                unsafe_allow_html=True,
+                            )
+                            c7.markdown(f"<small style='color:rgba(255,255,255,0.5)'>Carteira</small>  \n{pct_cart:.1f}%", unsafe_allow_html=True)
+                        st.markdown("<hr style='margin:6px 0;border-color:rgba(255,255,255,0.06)'>", unsafe_allow_html=True)
 
     else:
         st.info("Nenhuma posição cadastrada ainda. Adicione sua primeira abaixo.")
@@ -1708,30 +1767,31 @@ with tab_historico:
         df_hist = pd.DataFrame(historico).sort_values("mes")
 
         # ── Barras comparativas ──
+        st.markdown("#### Comparativo Mensal")
         fig_hist = go.Figure()
         fig_hist.add_trace(go.Bar(
             x=df_hist["mes_fmt"], y=df_hist["receitas"],
-            name="Receitas", marker_color="#26A69A",
+            name="Receitas", marker_color="#00a87e",
         ))
         fig_hist.add_trace(go.Bar(
             x=df_hist["mes_fmt"], y=df_hist["gastos"],
-            name="Gastos", marker_color="#FF6B6B",
+            name="Gastos", marker_color="#e61e49",
         ))
         fig_hist.add_trace(go.Scatter(
             x=df_hist["mes_fmt"], y=df_hist["saldo"],
             name="Saldo", mode="lines+markers",
-            line=dict(color="#FFEAA7", width=2),
+            line=dict(color="#494fdf", width=2),
+            marker=dict(size=6),
         ))
         fig_hist.update_layout(
-            title="Comparativo Mensal",
             barmode="group",
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
             font_color="white",
             xaxis=dict(gridcolor="rgba(255,255,255,0.08)"),
-            yaxis=dict(title="R$", gridcolor="rgba(255,255,255,0.08)"),
-            legend=dict(orientation="h", y=1.12),
-            margin=dict(l=0, r=0, t=60, b=0),
+            yaxis=dict(gridcolor="rgba(255,255,255,0.08)"),
+            legend=dict(orientation="h", y=1.08),
+            margin=dict(l=0, r=0, t=30, b=0),
         )
         st.plotly_chart(fig_hist, use_container_width=True)
 
