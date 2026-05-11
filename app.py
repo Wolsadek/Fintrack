@@ -1169,30 +1169,66 @@ def buscar_taxa_cambio(ticker: str | None, invert: bool) -> float:
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-@st.cache_data(ttl=3600, show_spinner=False)
-def buscar_historico_portfolio(tickers_qtds: tuple, periodo: str) -> pd.DataFrame:
-    """Histórico do portfolio em USD para o período dado."""
+def buscar_historico_portfolio(positions: tuple, periodo: str) -> pd.DataFrame:
+    """
+    Histórico do portfolio em USD.
+    positions: tuple de (ticker, quantidade, data_entrada_str)
+    Só inclui cada ativo a partir da data em que foi cadastrado.
+    """
     try:
         import yfinance as yf
-        dfs = []
-        for ticker, qtd in tickers_qtds:
-            hist = yf.Ticker(ticker).history(period=periodo)["Close"]
-            if not hist.empty:
-                dfs.append(hist * qtd)
-        if not dfs:
+        from datetime import date as _date, datetime as _dt
+
+        if not positions:
             return pd.DataFrame()
-        combined = pd.concat(dfs, axis=1)
-        combined = combined.ffill()          # preenche fins de semana/feriados
-        total    = combined.sum(axis=1)
-        # Remove timezone sem erros independente da versão do yfinance
-        try:
-            total.index = total.index.tz_localize(None)
-        except TypeError:
-            total.index = total.index.tz_convert(None)
-        # Normaliza para só data (evita artefatos de timezone)
-        total.index = pd.to_datetime([d.date() for d in total.index])
-        df = total.reset_index()
-        df.columns = ["data", "valor"]      # renomeia independente do nome original
+
+        tickers = list({p[0] for p in positions})
+
+        # Download de todos os tickers de uma vez (mais robusto que individual)
+        raw = yf.download(tickers, period=periodo, auto_adjust=True, progress=False)
+        if raw.empty:
+            return pd.DataFrame()
+
+        # Close funciona para 1 ou N tickers
+        if isinstance(raw.columns, pd.MultiIndex):
+            close = raw["Close"].copy()
+        else:
+            close = raw[["Close"]].copy()
+            close.columns = tickers
+
+        # Remove timezone
+        if close.index.tz is not None:
+            close.index = close.index.tz_convert(None)
+        close.index = pd.to_datetime([d.date() for d in close.index])
+
+        # Corta em hoje (sem datas futuras)
+        today_ts = pd.Timestamp(_date.today())
+        close    = close[close.index <= today_ts]
+
+        # Preenche fins de semana e feriados (forward fill por coluna)
+        close = close.ffill()
+
+        # Soma ponderada pelas quantidades, respeitando data_entrada de cada ativo
+        portfolio = pd.Series(0.0, index=close.index, dtype=float)
+        for ticker, qtd, data_entrada_str in positions:
+            if ticker not in close.columns:
+                continue
+            try:
+                entry = pd.Timestamp(_dt.strptime(str(data_entrada_str)[:10], "%Y-%m-%d"))
+            except Exception:
+                entry = close.index[0]
+            serie = close[ticker].fillna(0.0) * qtd
+            # Antes da data de entrada o ativo não existia na carteira
+            serie[serie.index < entry] = 0.0
+            portfolio = portfolio.add(serie)
+
+        # Remove datas onde nenhum ativo estava cadastrado
+        portfolio = portfolio[portfolio > 0]
+        if portfolio.empty:
+            return pd.DataFrame()
+
+        df = portfolio.reset_index()
+        df.columns = ["data", "valor"]
         return df
     except Exception:
         return pd.DataFrame()
@@ -1410,17 +1446,20 @@ with tab_invest:
         col_g1, col_g2 = st.columns([3, 2])
 
         with col_g1:
-            tickers_qtds_key = tuple((p["ticker"], p["quantidade"]) for p in posicoes)
-            periodo_yf       = PERIODOS_MAP[periodo_sel]
-            df_evolucao      = buscar_historico_portfolio(tickers_qtds_key, periodo_yf)
+            posicoes_key = tuple(
+                (p["ticker"], p["quantidade"], str(p.get("data_entrada", "")))
+                for p in posicoes
+            )
+            periodo_yf   = PERIODOS_MAP[periodo_sel]
+            df_evolucao  = buscar_historico_portfolio(posicoes_key, periodo_yf)
 
             if not df_evolucao.empty:
                 df_evolucao["valor_conv"] = df_evolucao["valor"] * taxa_moeda
 
-                # Agrega em candles mensais (OHLC)
+                # Agrega mensalmente — label = primeiro dia do mês (evita "junho" no parcial)
                 df_ohlc = (
                     df_evolucao.set_index("data")["valor_conv"]
-                    .resample("ME")
+                    .resample("MS")          # Month Start: label fica em 1º do mês
                     .ohlc()
                     .dropna()
                     .reset_index()
@@ -1451,10 +1490,10 @@ with tab_invest:
                     customdata=df_ohlc[["close", "investido", "ganho", "retorno"]].values,
                     hovertemplate=(
                         "<b>%{x|%b %Y}</b><br>"
-                        f"Patrimônio: {simbolo}%{{customdata[0]:,.2f}}<br>"
-                        f"Investido: {simbolo}%{{customdata[1]:,.2f}}<br>"
-                        f"Ganho/Perda: {simbolo}%{{customdata[2]:+,.2f}}<br>"
-                        f"Var. mês: {simbolo}%{{customdata[3]:+,.2f}}"
+                        f"Patrimônio: {simbolo} %{{customdata[0]:,.2f}}<br>"
+                        f"Investido: {simbolo} %{{customdata[1]:,.2f}}<br>"
+                        f"Ganho/Perda: {simbolo} %{{customdata[2]:,.2f}}<br>"
+                        f"Var. mês: {simbolo} %{{customdata[3]:,.2f}}"
                         "<extra></extra>"
                     ),
                     yaxis="y",
