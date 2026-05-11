@@ -486,6 +486,7 @@ with st.sidebar:
             )
             if st.button("↺ nova dica", key="btn_nova_dica"):
                 db.set_config("dica_ia_data", "")
+                st.session_state.pop("_modal_cat_ia", None)
                 st.rerun()
 
 # ─────────────────── DADOS DO MÊS ───────────────────
@@ -745,6 +746,7 @@ with tab_transacoes:
     with col_cat_filter:
         cat_filtro = st.multiselect("Filtrar por categoria", options=CATEGORIAS_LISTA)
     with col_ia_btn:
+        st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
         n_outros = len(df[df["categoria"] == "Outros"])
         btn_label = f"🤖 IA  ({n_outros})" if n_outros else "🤖 IA"
         if st.button(btn_label, key="btn_open_cat_ia", use_container_width=True,
